@@ -30,7 +30,7 @@ struct RootView: View {
                     // Load profile then generate first move
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                         loadProfile()
-                        appState.generateMove()
+                        appState.generateMove(modelContext: modelContext)
                     }
                 }
             } else {
@@ -51,9 +51,10 @@ struct RootView: View {
                         appState.showingMoveDetail = false
                     },
                     onRemix: {
+                        move.wasRemixed = true   // feedback signal: user passed on this move
                         appState.showingMoveDetail = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            appState.generateMove(isRemix: true)
+                            appState.generateMove(modelContext: modelContext, isRemix: true)
                         }
                     },
                     onComplete: {

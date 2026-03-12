@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - LLM Service (OpenAI)
 // Two modes:
-// 1. composeMove — given verified place candidates from Google Places, pick one and compose
+// 1. composeMove — given scored+verified candidates, pick one and compose
 // 2. composeMoveWithoutCandidates — LLM suggests a real place from its knowledge (fallback)
 
 struct LLMService {
@@ -11,32 +11,32 @@ struct LLMService {
 
     init(apiKey: String = APIConfig.shared.openAIKey, model: String = "gpt-4o") {
         self.apiKey = apiKey
-        self.model = model
+        self.model  = model
     }
 
-    // MARK: - Mode 1: Compose from Candidates
-    // Takes context + verified candidates + location name, returns a parsed move response.
+    // MARK: - Mode 1: Compose from Scored Candidates
+    // Takes context + ranked/scored candidates + location, returns a parsed move response.
     func composeMove(
         context: MoveContext,
-        candidates: [PlaceCandidate],
+        scoredCandidates: [ScoredCandidate],
         locationName: String? = nil
     ) async throws -> LLMoveResponse {
-        let excluded = context.safetyExcludeCategories
+        let excluded    = context.safetyExcludeCategories
         let systemPrompt = buildSystemPrompt(excludedCategories: excluded)
-        let userPrompt = buildUserPrompt(context: context, candidates: candidates, locationName: locationName)
+        let userPrompt   = buildUserPrompt(context: context, scoredCandidates: scoredCandidates, locationName: locationName)
         // gpt-4o-mini: picking from a provided list is a simple task — 15x cheaper than gpt-4o
         return try await callOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, modelOverride: "gpt-4o-mini")
     }
 
     // MARK: - Mode 2: LLM-Only Discovery (No Candidates)
-    // When Google Places fails, ask GPT-4o to suggest a real local place.
+    // When all candidate sources fail, ask GPT-4o to suggest a real local place.
     func composeMoveWithoutCandidates(
         context: MoveContext,
         locationName: String?
     ) async throws -> LLMoveResponse {
-        let excluded = context.safetyExcludeCategories
+        let excluded     = context.safetyExcludeCategories
         let systemPrompt = buildDiscoverySystemPrompt(excludedCategories: excluded)
-        let userPrompt = buildDiscoveryUserPrompt(context: context, locationName: locationName)
+        let userPrompt   = buildDiscoveryUserPrompt(context: context, locationName: locationName)
         // gpt-4o: discovery mode needs deep local knowledge — keep full model
         return try await callOpenAI(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 1500)
     }
@@ -46,7 +46,7 @@ struct LLMService {
         systemPrompt: String,
         userPrompt: String,
         maxTokens: Int = 1200,
-        modelOverride: String? = nil  // nil = use self.model (gpt-4o for discovery)
+        modelOverride: String? = nil
     ) async throws -> LLMoveResponse {
         let resolvedModel = modelOverride ?? self.model
         print("[LLM] Sending prompt to \(resolvedModel)...")
@@ -55,7 +55,7 @@ struct LLMService {
             "model": resolvedModel,
             "messages": [
                 ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": userPrompt]
+                ["role": "user",   "content": userPrompt]
             ],
             "response_format": ["type": "json_object"],
             "temperature": 0.9,
@@ -66,7 +66,7 @@ struct LLMService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json",  forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -74,32 +74,27 @@ struct LLMService {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMError.invalidResponse
         }
-
         guard httpResponse.statusCode == 200 else {
             let errorBody = String(data: data, encoding: .utf8) ?? "unknown"
             print("[LLM] API error HTTP \(httpResponse.statusCode): \(errorBody)")
             throw LLMError.apiError(statusCode: httpResponse.statusCode, message: errorBody)
         }
 
-        // Parse the OpenAI response
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let json    = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let message = firstChoice["message"] as? [String: Any],
+              let first   = choices.first,
+              let message = first["message"] as? [String: Any],
               let content = message["content"] as? String else {
             throw LLMError.parsingFailed
         }
 
         print("[LLM] Got response, parsing JSON...")
 
-        // Parse the JSON content into our response struct
         guard let contentData = content.data(using: .utf8) else {
             throw LLMError.parsingFailed
         }
 
-        let decoder = JSONDecoder()
-        let moveResponse = try decoder.decode(LLMoveResponse.self, from: contentData)
-
+        let moveResponse = try JSONDecoder().decode(LLMoveResponse.self, from: contentData)
         print("[LLM] ✅ Composed: \"\(moveResponse.title)\" at \(moveResponse.placeName)")
         return moveResponse
     }
@@ -125,11 +120,12 @@ struct LLMService {
         6. The reason must reference the user's actual preferences to feel hand-picked.
         7. Match the energy to the time of day and context.
         8. For placeLatitude and placeLongitude: return the EXACT coordinates of the candidate you selected (they are listed in the candidates). Do not make up coordinates.
-        9. Respond ONLY with valid JSON in the exact format specified.
+        9. Prefer higher-scored candidates [Score: X ★]. You may choose a lower-scored candidate only if context strongly favors it (e.g., a 7.2-scored bar is right for late Friday night over a 9.0-scored café).
+        10. Respond ONLY with valid JSON in the exact format specified.
         """
 
         if !excludedCategories.isEmpty {
-            prompt += "\n10. TIME-OF-DAY RESTRICTION — Do NOT suggest any place in these categories: \(excludedCategories.joined(separator: ", ")). This rule is non-negotiable."
+            prompt += "\n11. TIME-OF-DAY RESTRICTION — Do NOT suggest any place in these categories: \(excludedCategories.joined(separator: ", ")). This rule is non-negotiable."
         }
 
         return prompt
@@ -169,29 +165,43 @@ struct LLMService {
         return prompt
     }
 
-    // MARK: - User Prompt (Candidate Mode)
-    private func buildUserPrompt(context: MoveContext, candidates: [PlaceCandidate], locationName: String? = nil) -> String {
+    // MARK: - User Prompt (Candidate Mode — Scored)
+    private func buildUserPrompt(
+        context: MoveContext,
+        scoredCandidates: [ScoredCandidate],
+        locationName: String? = nil
+    ) -> String {
         var parts: [String] = []
 
         // Location — always first so the LLM knows where the user is
         parts.append("## User's Current Location")
-        if let name = locationName {
-            parts.append("- Location: \(name)")
-        }
+        if let name = locationName { parts.append("- Location: \(name)") }
         if let lat = context.latitude, let lng = context.longitude {
             parts.append("- Coordinates: \(lat), \(lng)")
         }
         parts.append("- All candidate places below are already near this location.")
 
         // Session filters — mandatory constraints, listed prominently
-        parts.append("")
-        parts.append("## Current Filters (YOU MUST OBEY THESE)")
-        parts.append("- Social mode: \(context.filterSocialMode)")
-        parts.append("- Indoor/Outdoor: \(context.filterIndoorOutdoor)")
-        if let fb = context.filterBudget {
-            parts.append("- Max budget: \(fb)")
+        // social mode: only emit if user explicitly set it (nil = use profile guidance)
+        // indoor/outdoor: only emit if not "Either" (Either = no constraint)
+        let hasAnyFilter = context.filterSocialMode != nil
+            || context.filterIndoorOutdoor != IndoorOutdoor.either.rawValue
+            || context.filterBudget != nil
+
+        if hasAnyFilter {
+            parts.append("")
+            parts.append("## Current Filters (YOU MUST OBEY THESE)")
+            if let social = context.filterSocialMode {
+                parts.append("- Social mode: \(social)")
+            }
+            if context.filterIndoorOutdoor != IndoorOutdoor.either.rawValue {
+                parts.append("- Indoor/Outdoor: \(context.filterIndoorOutdoor)")
+            }
+            if let fb = context.filterBudget {
+                parts.append("- Max budget: \(fb)")
+            }
+            parts.append("Only select a candidate that satisfies ALL of the above filters.")
         }
-        parts.append("Only select a candidate that satisfies ALL of the above filters.")
 
         // User profile
         parts.append("")
@@ -200,21 +210,20 @@ struct LLMService {
         // Current context (time, day, season)
         appendContextSection(to: &parts, context: context)
 
-        // Recent history
+        // Recent history + category affinity
         appendHistorySection(to: &parts, context: context)
 
-        // Candidates — include lat/lng so LLM can echo them back accurately
+        // Scored candidates — ranked, richly formatted
         parts.append("")
-        parts.append("## Real Candidate Places (verified open and nearby)")
-        for (i, candidate) in candidates.enumerated() {
-            parts.append("[\(i+1)] \(candidate.promptDescription)")
-            parts.append("  Coordinates: \(candidate.latitude), \(candidate.longitude)")
+        parts.append("## Real Candidate Places (scored and ranked — prefer higher scores)")
+        for (i, sc) in scoredCandidates.enumerated() {
+            parts.append("\(i + 1). \(sc.promptDescription)")
             parts.append("")
         }
 
         // Output format
         parts.append("## Output Format")
-        parts.append("Select ONE place from the candidates above. Return its EXACT name, address, and coordinates as listed.")
+        parts.append("Select ONE place from the candidates above. Prefer higher-scored candidates. Return its EXACT name, address, and coordinates as listed.")
         appendOutputSchema(to: &parts)
 
         return parts.joined(separator: "\n")
@@ -224,7 +233,7 @@ struct LLMService {
     private func buildDiscoveryUserPrompt(context: MoveContext, locationName: String?) -> String {
         var parts: [String] = []
 
-        // Location context — the critical section for discovery mode
+        // Location context — critical for discovery mode
         parts.append("## Location (CRITICAL — read carefully)")
         if let name = locationName {
             parts.append("- The user is currently in: \(name)")
@@ -235,17 +244,27 @@ struct LLMService {
             parts.append("- The suggested place's coordinates must be within ~30 miles of these coordinates.")
         }
         parts.append("- Maximum travel distance: \(context.maxDistance ?? "a reasonable distance")")
-        parts.append("- NEVER suggest a place in a different city or state. Only suggest places the user can actually get to from their current location.")
+        parts.append("- NEVER suggest a place in a different city or state.")
 
-        // Session filters — mandatory constraints
-        parts.append("")
-        parts.append("## Current Filters (YOU MUST OBEY THESE)")
-        parts.append("- Social mode: \(context.filterSocialMode)")
-        parts.append("- Indoor/Outdoor: \(context.filterIndoorOutdoor)")
-        if let fb = context.filterBudget {
-            parts.append("- Max budget: \(fb)")
+        // Session filters
+        let hasAnyFilter = context.filterSocialMode != nil
+            || context.filterIndoorOutdoor != IndoorOutdoor.either.rawValue
+            || context.filterBudget != nil
+
+        if hasAnyFilter {
+            parts.append("")
+            parts.append("## Current Filters (YOU MUST OBEY THESE)")
+            if let social = context.filterSocialMode {
+                parts.append("- Social mode: \(social)")
+            }
+            if context.filterIndoorOutdoor != IndoorOutdoor.either.rawValue {
+                parts.append("- Indoor/Outdoor: \(context.filterIndoorOutdoor)")
+            }
+            if let fb = context.filterBudget {
+                parts.append("- Max budget: \(fb)")
+            }
+            parts.append("Only suggest a place that satisfies ALL of the above filters.")
         }
-        parts.append("Only suggest a place that satisfies ALL of the above filters.")
 
         // User profile
         parts.append("")
@@ -254,10 +273,10 @@ struct LLMService {
         // Current context
         appendContextSection(to: &parts, context: context)
 
-        // Recent history
+        // Recent history + affinity
         appendHistorySection(to: &parts, context: context)
 
-        // Search guidance from profile
+        // Search guidance
         parts.append("")
         parts.append("## What to Look For")
         parts.append("Based on the user's vibes and place type preferences, suggest a real place that matches their taste.")
@@ -278,15 +297,21 @@ struct LLMService {
 
     private func appendProfileSection(to parts: inout [String], context: MoveContext) {
         parts.append("## User Profile")
-        if let reason = context.boredomReason { parts.append("- Usually bored because: \(reason)") }
-        if let desire = context.coreDesire { parts.append("- Core desire: \(desire)") }
-        if !context.vibes.isEmpty { parts.append("- Vibes: \(context.vibes.joined(separator: ", "))") }
-        if !context.placeTypes.isEmpty { parts.append("- Favorite place types: \(context.placeTypes.joined(separator: ", "))") }
-        if let energy = context.energyLevel { parts.append("- Energy level: \(energy)") }
-        if let budget = context.budget { parts.append("- Budget preference: \(budget)") }
-        if let social = context.socialPref { parts.append("- Social preference: \(social)") }
-        if let transport = context.transport { parts.append("- Gets around by: \(transport)") }
-        if !context.personalRules.isEmpty { parts.append("- Personal rules: \(context.personalRules.joined(separator: ", "))") }
+        if let reason  = context.boredomReason    { parts.append("- Usually bored because: \(reason)") }
+        if let desire  = context.coreDesire        { parts.append("- Core desire: \(desire)") }
+        if !context.vibes.isEmpty                  { parts.append("- Vibes: \(context.vibes.joined(separator: ", "))") }
+        if !context.placeTypes.isEmpty             { parts.append("- Favorite place types: \(context.placeTypes.joined(separator: ", "))") }
+        if let energy  = context.energyLevel       { parts.append("- Energy level: \(energy)") }
+        if let budget  = context.budget            { parts.append("- Budget preference: \(budget)") }
+
+        // Only include socialPref when no session filter is set — avoid double-signaling.
+        // When filterSocialMode is non-nil, the mandatory filter section already handles it.
+        if context.filterSocialMode == nil, let social = context.socialPref {
+            parts.append("- Social preference: \(social)")
+        }
+
+        if let transport = context.transport       { parts.append("- Gets around by: \(transport)") }
+        if !context.personalRules.isEmpty          { parts.append("- Personal rules: \(context.personalRules.joined(separator: ", "))") }
     }
 
     private func appendContextSection(to parts: inout [String], context: MoveContext) {
@@ -304,6 +329,19 @@ struct LLMService {
             for title in context.recentMoveTitles {
                 parts.append("- \(title)")
             }
+        }
+
+        // Category affinity — help LLM write a more personalized reasonItFits
+        if !context.recentCategories.isEmpty {
+            let sorted = context.recentCategories
+                .sorted { $0.value > $1.value }
+                .prefix(5)
+            parts.append("")
+            parts.append("## Category Affinity (completed moves — last 30 days)")
+            for (cat, count) in sorted {
+                parts.append("- \(cat.capitalized): \(count) visit\(count == 1 ? "" : "s")")
+            }
+            parts.append("Consider this when writing reasonItFits: acknowledge explored categories and gravitate toward underexplored ones.")
         }
     }
 
@@ -323,7 +361,7 @@ struct LLMService {
           "category": "one of: Coffee, Food, Bookstore, Gallery, Park, Music, Nightlife, Shopping, Walk, Culture, Film, Market, Nature, Wellness",
           "costEstimate": "one of: Free, Under $5, Under $12, Under $25, Under $50, $50+",
           "timeEstimate": 30,
-          "reasonItFits": "Because you said you... (personalized reason referencing their profile)"
+          "reasonItFits": "Because you said you... (personalized reason referencing their profile and category history)"
         }
         """)
     }
@@ -356,9 +394,9 @@ enum LLMError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidResponse: return "Invalid response from LLM"
-        case .apiError(let code, let msg): return "LLM API error \(code): \(msg)"
-        case .parsingFailed: return "Failed to parse LLM response"
+        case .invalidResponse:              return "Invalid response from LLM"
+        case .apiError(let code, let msg):  return "LLM API error \(code): \(msg)"
+        case .parsingFailed:                return "Failed to parse LLM response"
         }
     }
 }

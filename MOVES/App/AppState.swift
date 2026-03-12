@@ -36,15 +36,17 @@ final class AppState {
         self.hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
     }
 
-    // Filters for move generation
-    var selectedSocialMode: SocialMode = .solo
+    // MARK: - Session Filters
+    // selectedSocialMode = nil → no explicit session filter → onboarding socialPref is used as guidance
+    // selectedSocialMode = .solo/.duo/.group → explicit filter → overrides onboarding guidance in LLM prompt
+    var selectedSocialMode: SocialMode? = nil       // nil = use onboarding preference
     var selectedMood: MoveMood?
     var selectedBudget: CostRange?
     var selectedTime: TimeAvailable?
     var selectedIndoorOutdoor: IndoorOutdoor = .either
 
     func resetFilters() {
-        selectedSocialMode = .solo
+        selectedSocialMode = nil   // back to onboarding guidance
         selectedMood = nil
         selectedBudget = nil
         selectedTime = nil
@@ -74,10 +76,30 @@ final class AppState {
         UserDefaults.standard.set(dailyMovesUsed + 1, forKey: todayKey)
     }
 
+    // MARK: - Category Frequency (Phase 7 scoring)
+    // Counts completed moves by MOVES category over the last 30 days.
+    // Used by CandidateScorer.noveltyScore to de-prioritize over-explored categories.
+    func recentCategoryFrequency(modelContext: ModelContext) -> [String: Int] {
+        let cutoff      = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+        let distantPast = Date.distantPast
+        let descriptor  = FetchDescriptor<Move>(
+            predicate: #Predicate { move in
+                move.isCompleted && (move.completedAt ?? distantPast) >= cutoff
+            }
+        )
+        let recentMoves = (try? modelContext.fetch(descriptor)) ?? []
+
+        return recentMoves.reduce(into: [:]) { freq, move in
+            let cat = move.category.rawValue.lowercased()
+            freq[cat, default: 0] += move.wasRemixed ? 2 : 1
+        }
+    }
+
     // MARK: - Generate Move (Real Pipeline)
     // Multi-source: Google Places → MapKit → LLM-only → nil (no mock, no fake data).
     // Remix reshuffles cached candidates instead of re-calling APIs.
-    func generateMove(isRemix: Bool = false) {
+    // modelContext is used to compute category frequency for Phase 7 novelty scoring.
+    func generateMove(modelContext: ModelContext? = nil, isRemix: Bool = false) {
         // Daily limit gate — free users only
         if !isPremium && dailyMovesUsed >= Self.freeUserDailyLimit {
             print("[AppState] 🚫 Daily limit reached (\(dailyMovesUsed)/\(Self.freeUserDailyLimit))")
@@ -86,16 +108,17 @@ final class AppState {
         }
 
         isGeneratingMove = true
-        generationError = false  // Reset on every new attempt
+        generationError = false
 
         // Request fresh location if authorized
         locationService.requestLocation()
 
+        // Compute category frequency on main thread before the async task
+        let recentCategories: [String: Int] = modelContext.map { recentCategoryFrequency(modelContext: $0) } ?? [:]
+
         print("[AppState] generateMove(\(isRemix ? "remix" : "fresh")) called")
+        print("[AppState] Social filter: \(selectedSocialMode?.rawValue ?? "nil (onboarding pref)")")
         print("[AppState] Profile loaded: \(userProfile != nil)")
-        if let p = userProfile {
-            print("[AppState] Vibes: \(p.selectedVibes), Places: \(p.selectedPlaceTypes)")
-        }
 
         Task {
             // Wait for location with timeout — poll every 250ms, max 5 seconds
@@ -123,22 +146,19 @@ final class AppState {
                 location: location,
                 locationName: locationName,
                 recentMoveTitles: recentMoveTitles,
+                recentCategories: recentCategories,
                 isRemix: isRemix
             )
 
             if let move {
                 incrementDailyCount()
                 print("[AppState] ✅ Daily count: \(self.dailyMovesUsed)/\(Self.freeUserDailyLimit)")
-                // Track history to avoid repeats
                 recentMoveTitles.append(move.title)
-                if recentMoveTitles.count > 20 {
-                    recentMoveTitles.removeFirst()
-                }
+                if recentMoveTitles.count > 20 { recentMoveTitles.removeFirst() }
                 self.currentMove = move
                 self.isGeneratingMove = false
                 self.showingMoveDetail = true
             } else {
-                // All sources exhausted — show inline error, no fake data
                 print("[AppState] ❌ Generation returned nil — showing error state")
                 self.isGeneratingMove = false
                 self.generationError = true
@@ -158,8 +178,8 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .home: return "sparkle"
-        case .journal: return "book.closed"
+        case .home:     return "sparkle"
+        case .journal:  return "book.closed"
         case .settings: return "gearshape"
         }
     }

@@ -98,6 +98,8 @@ struct HomeView: View {
 
             VStack(spacing: MOVESSpacing.sm) {
                 // Row 1: Social mode
+                // Tap active chip → deselect (nil = use onboarding preference).
+                // Tap different chip → set it explicitly.
                 HStack(spacing: 0) {
                     ForEach(SocialMode.allCases) { mode in
                         FilterChip(
@@ -106,7 +108,11 @@ struct HomeView: View {
                             isSelected: appState.selectedSocialMode == mode
                         ) {
                             withAnimation(MOVESAnimation.quick) {
-                                appState.selectedSocialMode = mode
+                                if appState.selectedSocialMode == mode {
+                                    appState.selectedSocialMode = nil   // tap active → deselect
+                                } else {
+                                    appState.selectedSocialMode = mode
+                                }
                             }
                         }
                     }

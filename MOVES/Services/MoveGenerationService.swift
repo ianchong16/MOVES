@@ -4,17 +4,18 @@ import CoreLocation
 
 // MARK: - Move Generation Service
 // The pipeline orchestrator.
-// Stage 1: Context assembly
-// Stage 2: Candidate generation (Google Places → MapKit → LLM-only)
-// Stage 3: LLM composition
-// Stage 4: Move building
-// Candidate caching: remix reshuffles cached candidates instead of re-calling APIs.
-// Mock fallback only if everything else fails.
+// Stage 1:   Context assembly
+// Stage 2:   Candidate generation (Google Places → MapKit → LLM-only)
+// Stage 2.5: CandidateScorer — rank by composite score before LLM sees them
+// Stage 3:   LLM composition (scored candidates → curated move)
+// Stage 4:   Move building
+// Candidate caching: remix reshuffles + re-scores cached candidates (no extra API calls).
 
 final class MoveGenerationService {
-    private let placesService = PlaceCandidateService()
-    private let mapKitService = MapKitSearchService()
-    private let llmService = LLMService()
+    private let placesService  = PlaceCandidateService()
+    private let mapKitService  = MapKitSearchService()
+    private let llmService     = LLMService()
+    private let weatherService = WeatherService()
 
     // Candidate cache — remix reshuffles these instead of re-calling APIs
     private var cachedCandidates: [PlaceCandidate] = []
@@ -26,18 +27,20 @@ final class MoveGenerationService {
     // Never falls back to mock/hardcoded data.
     func generate(
         profile: UserProfile?,
-        socialMode: SocialMode,
+        socialMode: SocialMode?,           // nil = use onboarding pref (not mandatory)
         indoorOutdoor: IndoorOutdoor,
         budgetFilter: CostRange?,
         location: CLLocation?,
         locationName: String? = nil,
         recentMoveTitles: [String] = [],
+        recentCategories: [String: Int] = [:],   // Phase 7: category affinity for novelty scoring
         isRemix: Bool = false
     ) async -> Move? {
         print("[Pipeline] ═══════════════════════════════════")
         print("[Pipeline] Starting move generation \(isRemix ? "(REMIX)" : "")")
         print("[Pipeline] Location: \(location?.coordinate.latitude ?? 0), \(location?.coordinate.longitude ?? 0)")
         print("[Pipeline] Location name: \(locationName ?? "unknown")")
+        print("[Pipeline] Social filter: \(socialMode?.rawValue ?? "nil (onboarding pref)")")
         print("[Pipeline] Profile: \(profile != nil ? "loaded" : "nil")")
 
         // Check location is available
@@ -46,7 +49,7 @@ final class MoveGenerationService {
             return await llmOnlyFallback(
                 profile: profile, socialMode: socialMode, indoorOutdoor: indoorOutdoor,
                 budgetFilter: budgetFilter, location: location, locationName: locationName,
-                recentMoveTitles: recentMoveTitles
+                recentMoveTitles: recentMoveTitles, recentCategories: recentCategories
             )
         }
 
@@ -57,7 +60,8 @@ final class MoveGenerationService {
             indoorOutdoor: indoorOutdoor,
             budgetFilter: budgetFilter,
             location: location,
-            recentMoveTitles: recentMoveTitles
+            recentMoveTitles: recentMoveTitles,
+            recentCategories: recentCategories
         )
 
         print("[Pipeline] Stage 1 ✅ Context built")
@@ -72,11 +76,9 @@ final class MoveGenerationService {
         var candidates: [PlaceCandidate] = []
 
         if isRemix, !cachedCandidates.isEmpty, cacheIsValid() {
-            // Remix — reshuffle cached candidates (doc says: "no paid API calls on remix")
-            candidates = cachedCandidates.shuffled()
-            print("[Pipeline] Stage 2 ✅ Using \(candidates.count) cached candidates (remix reshuffle)")
+            candidates = cachedCandidates
+            print("[Pipeline] Stage 2 ✅ Using \(candidates.count) cached candidates (remix)")
         } else {
-            // Fresh fetch — try sources in priority order
             candidates = await fetchFreshCandidates(context: context)
         }
 
@@ -90,23 +92,49 @@ final class MoveGenerationService {
 
         // Cache candidates for future remixes
         cachedCandidates = candidates
-        cachedContext = context
-        lastCacheTime = Date()
+        cachedContext    = context
+        lastCacheTime    = Date()
+
+        // Stage 2.5: Score and rank candidates
+        let userLocation = location!   // safe — guarded above
+        let weather      = await weatherService.fetchCondition(at: userLocation)
+        var scored       = CandidateScorer.score(
+            candidates: candidates, context: context,
+            userLocation: userLocation, weather: weather
+        )
+
+        // Remix: shuffle top-12 for variety while keeping quality
+        if isRemix {
+            scored = Array(scored.prefix(12).shuffled().prefix(8))
+        } else {
+            scored = Array(scored.prefix(8))
+        }
+
+        print("[Pipeline] Stage 2.5 ✅ Scored → top \(scored.count) candidates")
+        for (i, s) in scored.prefix(3).enumerated() {
+            print("[Pipeline]   \(i + 1). \(s.candidate.name) — [\(s.score.label)★] \(s.score.distanceLabel)")
+        }
 
         // Stage 3: LLM composition
         do {
-            let response = try await llmService.composeMove(context: context, candidates: candidates, locationName: locationName)
+            let response = try await llmService.composeMove(
+                context: context, scoredCandidates: scored, locationName: locationName
+            )
             print("[Pipeline] Stage 3 ✅ LLM composed: \"\(response.title)\" at \(response.placeName)")
 
             // Stage 4: Build the Move
-            let move = buildMove(from: response, candidates: candidates, location: location, locationName: locationName)
+            let move = buildMove(
+                from: response,
+                candidates: scored.map { $0.candidate },
+                location: location,
+                locationName: locationName
+            )
             print("[Pipeline] Stage 4 ✅ Move built: \"\(move.title)\" — \(move.distanceDescription)")
             print("[Pipeline] ═══════════════════════════════════")
             return move
 
         } catch {
             print("[Pipeline] Stage 3 ❌ LLM error: \(error.localizedDescription)")
-            // If LLM fails with candidates, try LLM-only as backup
             return await llmOnlyGeneration(
                 context: context, location: location, locationName: locationName
             )
@@ -180,27 +208,28 @@ final class MoveGenerationService {
         guard let lat = context.latitude, let lng = context.longitude else { return [] }
 
         let broadContext = MoveContext(
-            boredomReason: context.boredomReason,
-            coreDesire: context.coreDesire,
-            vibes: context.vibes,
-            placeTypes: ["restaurant", "cafe", "park"],
-            energyLevel: context.energyLevel,
-            maxDistance: "I'll go anywhere",
-            budget: context.budget,
-            socialPref: context.socialPref,
-            transport: context.transport,
-            personalRules: context.personalRules,
-            filterSocialMode: context.filterSocialMode,
+            boredomReason:      context.boredomReason,
+            coreDesire:         context.coreDesire,
+            vibes:              context.vibes,
+            placeTypes:         ["restaurant", "cafe", "park"],
+            energyLevel:        context.energyLevel,
+            maxDistance:        "I'll go anywhere",
+            budget:             context.budget,
+            socialPref:         context.socialPref,
+            transport:          context.transport,
+            personalRules:      context.personalRules,
+            filterSocialMode:   context.filterSocialMode,
             filterIndoorOutdoor: context.filterIndoorOutdoor,
-            filterBudget: context.filterBudget,
-            latitude: lat,
-            longitude: lng,
-            timeOfDay: context.timeOfDay,
-            dayOfWeek: context.dayOfWeek,
-            season: context.season,
-            isWeekend: context.isWeekend,
-            currentHour: context.currentHour,
-            recentMoveTitles: context.recentMoveTitles
+            filterBudget:       context.filterBudget,
+            latitude:           lat,
+            longitude:          lng,
+            timeOfDay:          context.timeOfDay,
+            dayOfWeek:          context.dayOfWeek,
+            season:             context.season,
+            isWeekend:          context.isWeekend,
+            currentHour:        context.currentHour,
+            recentMoveTitles:   context.recentMoveTitles,
+            recentCategories:   context.recentCategories
         )
 
         return await mapKitService.fetchCandidates(for: broadContext)
@@ -217,15 +246,12 @@ final class MoveGenerationService {
 
         do {
             let response = try await llmService.composeMoveWithoutCandidates(
-                context: context,
-                locationName: locationName
+                context: context, locationName: locationName
             )
             print("[Pipeline] LLM-only ✅ \"\(response.title)\" at \(response.placeName)")
-
             let move = buildMoveFromLLMOnly(from: response, location: location, locationName: locationName)
             print("[Pipeline] ═══════════════════════════════════")
             return move
-
         } catch {
             print("[Pipeline] LLM-only ❌ Failed: \(error.localizedDescription)")
             print("[Pipeline] ❌ All sources exhausted — returning nil (no mock data)")
@@ -237,12 +263,13 @@ final class MoveGenerationService {
     // MARK: - LLM-Only Fallback (no context built yet)
     private func llmOnlyFallback(
         profile: UserProfile?,
-        socialMode: SocialMode,
+        socialMode: SocialMode?,
         indoorOutdoor: IndoorOutdoor,
         budgetFilter: CostRange?,
         location: CLLocation?,
         locationName: String?,
-        recentMoveTitles: [String]
+        recentMoveTitles: [String],
+        recentCategories: [String: Int]
     ) async -> Move? {
         let context = ContextBuilder.build(
             profile: profile,
@@ -250,7 +277,8 @@ final class MoveGenerationService {
             indoorOutdoor: indoorOutdoor,
             budgetFilter: budgetFilter,
             location: location,
-            recentMoveTitles: recentMoveTitles
+            recentMoveTitles: recentMoveTitles,
+            recentCategories: recentCategories
         )
         return await llmOnlyGeneration(context: context, location: location, locationName: locationName)
     }
@@ -258,15 +286,13 @@ final class MoveGenerationService {
     // MARK: - Cache Validity
     private func cacheIsValid() -> Bool {
         guard let cacheTime = lastCacheTime else { return false }
-        // Cache valid for 10 minutes
-        return Date().timeIntervalSince(cacheTime) < 600
+        return Date().timeIntervalSince(cacheTime) < 600   // 10 minutes
     }
 
-    /// Clear the candidate cache (e.g., when user changes location significantly)
     func clearCache() {
         cachedCandidates = []
-        cachedContext = nil
-        lastCacheTime = nil
+        cachedContext    = nil
+        lastCacheTime    = nil
     }
 
     // MARK: - Build Move from LLM Response (with candidates)
@@ -276,43 +302,42 @@ final class MoveGenerationService {
         location: CLLocation?,
         locationName: String?
     ) -> Move {
-        // Match LLM's chosen place back to a candidate for accurate real-world coords.
-        // Fuzzy: exact → contains-either-direction → first candidate fallback.
-        let responseName = response.placeName.lowercased()
+        // Fuzzy match LLM's chosen name back to a candidate for accurate coords
+        let responseName     = response.placeName.lowercased()
         let matchedCandidate = candidates.first { $0.name.lowercased() == responseName }
             ?? candidates.first { $0.name.lowercased().contains(responseName) || responseName.contains($0.name.lowercased()) }
-            ?? candidates.first  // last resort: use first candidate's coords so we never go off-map
+            ?? candidates.first
+
         if let mc = matchedCandidate {
             print("[Pipeline] Matched candidate: \(mc.name) @ \(mc.latitude), \(mc.longitude)")
         }
 
-        let lat = matchedCandidate?.latitude ?? response.placeLatitude
-        let lng = matchedCandidate?.longitude ?? response.placeLongitude
-        let address = matchedCandidate?.address ?? response.placeAddress
+        let lat     = matchedCandidate?.latitude  ?? response.placeLatitude
+        let lng     = matchedCandidate?.longitude ?? response.placeLongitude
+        let address = matchedCandidate?.address   ?? response.placeAddress
 
-        let mood = MoveMood(rawValue: response.mood) ?? .spontaneous
-        let category = MoveCategory(rawValue: response.category) ?? .coffee
-        let cost = CostRange(rawValue: response.costEstimate) ?? .under12
+        let mood     = MoveMood(rawValue: response.mood)          ?? .spontaneous
+        let category = MoveCategory(rawValue: response.category)  ?? .coffee
+        let cost     = CostRange(rawValue: response.costEstimate) ?? .under12
 
-        // hoursVerified = true only if we have a Google Places candidate with confirmed open_now
         let hoursVerified = matchedCandidate?.dataSource == "google"
 
         let move = Move(
-            title: response.title,
-            setupLine: response.setupLine,
-            placeName: response.placeName,
-            placeAddress: address,
-            placeLatitude: lat,
-            placeLongitude: lng,
+            title:             response.title,
+            setupLine:         response.setupLine,
+            placeName:         response.placeName,
+            placeAddress:      address,
+            placeLatitude:     lat,
+            placeLongitude:    lng,
             actionDescription: response.actionDescription,
-            challenge: response.challenge,
-            mood: mood,
-            reasonItFits: response.reasonItFits,
-            costEstimate: cost,
-            timeEstimate: response.timeEstimate,
+            challenge:         response.challenge,
+            mood:              mood,
+            reasonItFits:      response.reasonItFits,
+            costEstimate:      cost,
+            timeEstimate:      response.timeEstimate,
             distanceDescription: "",
-            category: category,
-            hoursVerified: hoursVerified
+            category:          category,
+            hoursVerified:     hoursVerified
         )
 
         move.generatedForLocation = locationName
@@ -326,30 +351,33 @@ final class MoveGenerationService {
         location: CLLocation?,
         locationName: String?
     ) -> Move {
-        let mood = MoveMood(rawValue: response.mood) ?? .spontaneous
-        let category = MoveCategory(rawValue: response.category) ?? .coffee
-        let cost = CostRange(rawValue: response.costEstimate) ?? .under12
+        let mood     = MoveMood(rawValue: response.mood)          ?? .spontaneous
+        let category = MoveCategory(rawValue: response.category)  ?? .coffee
+        let cost     = CostRange(rawValue: response.costEstimate) ?? .under12
 
         let move = Move(
-            title: response.title,
-            setupLine: response.setupLine,
-            placeName: response.placeName,
-            placeAddress: response.placeAddress,
-            placeLatitude: response.placeLatitude,
-            placeLongitude: response.placeLongitude,
+            title:             response.title,
+            setupLine:         response.setupLine,
+            placeName:         response.placeName,
+            placeAddress:      response.placeAddress,
+            placeLatitude:     response.placeLatitude,
+            placeLongitude:    response.placeLongitude,
             actionDescription: response.actionDescription,
-            challenge: response.challenge,
-            mood: mood,
-            reasonItFits: response.reasonItFits,
-            costEstimate: cost,
-            timeEstimate: response.timeEstimate,
+            challenge:         response.challenge,
+            mood:              mood,
+            reasonItFits:      response.reasonItFits,
+            costEstimate:      cost,
+            timeEstimate:      response.timeEstimate,
             distanceDescription: "",
-            category: category,
-            hoursVerified: false  // LLM-only: no live hours data
+            category:          category,
+            hoursVerified:     false
         )
 
         move.generatedForLocation = locationName
-        calculateDistance(for: move, from: location, placeLatitude: response.placeLatitude, placeLongitude: response.placeLongitude, baseTime: response.timeEstimate)
+        calculateDistance(for: move, from: location,
+                          placeLatitude: response.placeLatitude,
+                          placeLongitude: response.placeLongitude,
+                          baseTime: response.timeEstimate)
         return move
     }
 
@@ -367,17 +395,14 @@ final class MoveGenerationService {
         let distanceMeters = userLocation.distance(from: placeLocation)
 
         if distanceMeters < 1609 {
-            // Under 1 mile — show walking time
-            let walkMinutes = Int(ceil(distanceMeters / 80.0))
+            let walkMinutes = max(1, Int(ceil(distanceMeters / 80.0)))
             move.distanceDescription = "\(walkMinutes) min walk"
             move.timeEstimate = walkMinutes + baseTime
         } else {
-            // Over 1 mile — show driving distance
             let miles = distanceMeters / 1609.34
             let driveMinutes = Int(ceil(miles * 2.0))
             move.distanceDescription = String(format: "%.1f mi away", miles)
             move.timeEstimate = driveMinutes + baseTime
         }
     }
-
 }

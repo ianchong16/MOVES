@@ -36,6 +36,10 @@ final class Move {
     // Trust signal — false means MapKit/LLM source; hours not API-verified
     var hoursVerified: Bool = false
 
+    // Feedback signal — true when user tapped Remix instead of completing
+    // Used by CandidateScorer.noveltyScore to de-prioritize dismissed categories
+    var wasRemixed: Bool = false
+
     // Journal memory
     var photoFilename: String?     // UUID-named JPEG in Documents dir; nil until photo is added
 
