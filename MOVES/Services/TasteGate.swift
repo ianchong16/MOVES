@@ -271,6 +271,46 @@ struct TasteGate {
             }
         }
 
+        // "Art on the walls" — galleries, museums, or cafes/bars with editorial art signals
+        // Checks type first, then editorial summary and name for softer signals.
+        if yes.contains("art on the walls") {
+            let types = candidate.types.map { $0.lowercased() }
+            let nameAndSummary = (candidate.name + " " + (candidate.editorialSummary ?? "")).lowercased()
+            if types.contains(where: { $0.contains("gallery") || $0.contains("museum") || $0.contains("art") }) {
+                signals += 1.0   // definitive art venue
+            } else if nameAndSummary.contains("gallery") || nameAndSummary.contains("art") ||
+                      nameAndSummary.contains("murals") || nameAndSummary.contains("curated") ||
+                      nameAndSummary.contains("exhibition") {
+                signals += 0.5   // art-inflected space (café with rotating art, etc.)
+            }
+        }
+
+        // "Vinyl / music playing" — record stores, music venues, or bars/cafes with music signals
+        if yes.contains("vinyl / music playing") {
+            let types = candidate.types.map { $0.lowercased() }
+            let nameAndSummary = (candidate.name + " " + (candidate.editorialSummary ?? "")).lowercased()
+            if types.contains(where: { $0.contains("record") || $0.contains("music_store") ||
+                                       $0.contains("vinyl") || $0.contains("music_store") }) {
+                signals += 1.0   // record store / music shop — definitive
+            } else if nameAndSummary.contains("vinyl") || nameAndSummary.contains("record") ||
+                      nameAndSummary.contains("jazz") || nameAndSummary.contains("live music") ||
+                      nameAndSummary.contains("jukebox") {
+                signals += 0.6   // music-forward bar, jazz café, etc.
+            } else if types.contains(where: { $0.contains("bar") || $0.contains("cafe") }) &&
+                      (nameAndSummary.contains("music") || nameAndSummary.contains("song")) {
+                signals += 0.3   // music-named venue (softer signal)
+            }
+        }
+
+        // "Window seats" — inferrable from cafe/bookstore types (natural proxy for window seating)
+        // Cafes and independent bookstores are the highest-probability window-seat venues.
+        if yes.contains("window seats") {
+            let types = candidate.types.map { $0.lowercased() }
+            if types.contains(where: { $0.contains("cafe") || $0.contains("coffee") || $0.contains("book") }) {
+                signals += 0.5
+            }
+        }
+
         return min(1.0, signals / max(1.0, Double(yes.count) * 0.5))
     }
 

@@ -17,9 +17,11 @@ struct GoogleEnrichmentService {
     /// Enrich top N candidates with Google Places data (rating, reviews, price, hours).
     /// Candidates that cannot be matched in Google are returned unchanged.
     /// If the Google API is unavailable, all candidates are returned unchanged.
+    /// topN = 12: covers the majority of a 25-candidate MapKit pool so that
+    /// candidates ranked 6–12 compete on actual quality rather than recall-order luck.
     func enrich(
         candidates: [PlaceCandidate],
-        topN: Int = 5
+        topN: Int = 12
     ) async -> [PlaceCandidate] {
         // If no API key, return unchanged (MapKit-only mode)
         guard !apiKey.isEmpty else {

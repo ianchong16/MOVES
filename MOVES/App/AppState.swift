@@ -26,6 +26,10 @@ final class AppState {
     var showingMoveDetail: Bool = false
     var showingPaywall: Bool = false
 
+    /// Shown in place of the tagline while a remix is loading.
+    /// nil during fresh generation — only set for remix flows.
+    var remixLoadingMessage: String? = nil
+
     // Generation pipeline
     private let generationService = MoveGenerationService()
     var userProfile: UserProfile?
@@ -33,6 +37,7 @@ final class AppState {
     var recentVenueFingerprints: [String] = []       // "placename|address" — last 10 generations
     var recentGeneratedCategories: [String] = []     // category of last 5 generated moves
     var generationError: Bool = false
+    var generationErrorReason: GenerationErrorReason = .unknown
 
     // MapKit query rotation index (P2) — increments each generation to cycle synonym sets.
     // Stored in UserDefaults so rotation persists across sessions.
@@ -70,6 +75,16 @@ final class AppState {
         selectedTime = nil
         selectedIndoorOutdoor = .either
         selectedWhen = .rightNow
+    }
+
+    /// True when any non-default session filter is active.
+    /// Used by error state to suggest "clear filters + retry" when filters may be the culprit.
+    var hasActiveFilters: Bool {
+        selectedSocialMode != nil     ||
+        selectedMood       != nil     ||
+        selectedBudget     != nil     ||
+        selectedTime       != nil     ||
+        selectedIndoorOutdoor != .either
     }
 
     // MARK: - Daily Limit (cost control)
@@ -118,9 +133,10 @@ final class AppState {
                 positive[cat, default: 0] += 1
             } else if move.wouldGoBack == false || move.wasRemixed {
                 negative[cat, default: 0] += 1   // explicit no OR remix = implicit rejection
-            } else {
-                positive[cat, default: 0] += 1   // completed, no feedback = neutral positive
             }
+            // wouldGoBack == nil (completed, no feedback) → truly neutral, skip both buckets.
+            // Previously counted as positive, which over-inflated affinity and triggered
+            // premature novelty penalties on categories users hadn't actually endorsed.
         }
 
         return (positive: positive, negative: negative)
@@ -225,6 +241,21 @@ final class AppState {
         return (positive: positive, negative: negative)
     }
 
+    // MARK: - Remix Loading Copy
+    // Maps user's stated rejection reason to a brief, on-brand loading message.
+    // Short lowercase — matches the tagline style. No period. No sentence case.
+    private func remixLoadingCopy(for reason: RemixReason?) -> String {
+        guard let reason else { return "finding something different" }
+        switch reason {
+        case .tooFar:          return "finding something closer"
+        case .notInTheMood:    return "shifting the vibe"
+        case .beenThere:       return "somewhere you haven't been"
+        case .notInteresting:  return "something with more pull"
+        case .tooExpensive:    return "easier on the wallet"
+        case .wrongVibe:       return "dialing in the energy"
+        }
+    }
+
     // MARK: - Generate Move (Real Pipeline)
     // Multi-source: Google Places → MapKit → LLM-only → nil (no mock, no fake data).
     // Remix reshuffles cached candidates instead of re-calling APIs.
@@ -239,6 +270,14 @@ final class AppState {
 
         isGeneratingMove = true
         generationError = false
+
+        // Show a reason-aware loading message for remix so the app feels responsive and intelligent.
+        // Cleared when generation completes (either success or error path).
+        if isRemix {
+            remixLoadingMessage = remixLoadingCopy(for: remixReason)
+        } else {
+            remixLoadingMessage = nil
+        }
 
         // Request fresh location if authorized
         locationService.requestLocation()
@@ -339,13 +378,59 @@ final class AppState {
 
                 self.currentMove = move
                 self.isGeneratingMove = false
+                self.remixLoadingMessage = nil
                 self.showingMoveDetail = true
             } else {
                 print("[AppState] ❌ Generation returned nil — showing error state")
                 self.isGeneratingMove = false
+                self.remixLoadingMessage = nil
                 self.generationError = true
+                // Tag the most-likely reason so the error UI can guide the user.
+                if location == nil {
+                    self.generationErrorReason = .noLocation
+                } else if self.hasActiveFilters {
+                    self.generationErrorReason = .filtersTooStrict
+                } else {
+                    self.generationErrorReason = .noResults
+                }
+                print("[AppState] ❌ Error reason: \(self.generationErrorReason)")
             }
         }
+    }
+}
+
+// MARK: - Generation Error Reason
+
+enum GenerationErrorReason {
+    case noLocation          // Location unavailable after 5s wait
+    case filtersTooStrict    // Filters active and likely responsible
+    case noResults           // Pipeline exhausted with no qualifying candidate
+    case networkError        // API call failed
+    case unknown
+
+    var headline: String {
+        switch self {
+        case .noLocation:      return "Can't find you."
+        case .filtersTooStrict: return "Filters are too tight."
+        case .noResults:       return "Nothing nearby right now."
+        case .networkError:    return "Connection hiccup."
+        case .unknown:         return "Nothing found."
+        }
+    }
+
+    var subline: String {
+        switch self {
+        case .noLocation:      return "Enable location access and try again."
+        case .filtersTooStrict: return "Reset your filters and try again."
+        case .noResults:       return "Move somewhere and generate again."
+        case .networkError:    return "Check your connection and try again."
+        case .unknown:         return "Adjust filters or try again."
+        }
+    }
+
+    /// True when clearing filters might fix the problem.
+    var suggestClearFilters: Bool {
+        self == .filtersTooStrict
     }
 }
 

@@ -318,8 +318,14 @@ final class MoveGenerationService {
         fullPool: [ScoredCandidate],
         context: MoveContext
     ) -> [ScoredCandidate] {
-        // Only inject on ~15% of generations
-        guard Double.random(in: 0...1) < 0.15 else { return topCandidates }
+        // Wildcard injection probability:
+        // - New users (no history): 40% — maximize discovery so early sessions feel varied and exciting
+        // - Returning users: 15% — enough serendipity without disrupting quality-focused output
+        let isNewUser = context.recentMoveTitles.isEmpty
+            && context.positiveCategoryAffinity.isEmpty
+            && context.negativeCategoryAffinity.isEmpty
+        let wildcardProbability: Double = isNewUser ? 0.40 : 0.15
+        guard Double.random(in: 0...1) < wildcardProbability else { return topCandidates }
         guard topCandidates.count >= 4 else { return topCandidates }
 
         // Find categories already in the top candidates
@@ -486,10 +492,9 @@ final class MoveGenerationService {
     }
 
     // MARK: - Fallback Move Builder (Phase 9A)
-    // When LLM composition fails but we have scored candidates,
-    // build a basic Move from the top candidate directly.
-    // Generic title/setup/action — functional but not poetic.
-    // Prevents falling back to expensive LLM-only discovery.
+    // When LLM composition fails, build from top scored candidate using
+    // category-aware template copy. Maintains brand voice — specific, direct,
+    // never generic. User should not be able to tell this is a fallback.
     private func buildFallbackMove(
         from scored: ScoredCandidate,
         location: CLLocation?,
@@ -498,18 +503,27 @@ final class MoveGenerationService {
         let c = scored.candidate
         let category = inferMoveCategory(from: c.types)
         let cost = inferCostRange(from: c.priceLevel)
+        let (title, setupLine, actionDescription, mood) = fallbackCopy(for: category, name: c.name, score: scored.score)
+
+        let reasonItFits: String = {
+            if let rating = c.rating, rating >= 4.4 {
+                return "\(c.name) is one of the better-rated spots near you right now."
+            } else {
+                return "Strong match for your taste and current location."
+            }
+        }()
 
         let move = Move(
-            title:             "Check Out \(c.name)",
-            setupLine:         "A spot worth visiting nearby.",
+            title:             title,
+            setupLine:         setupLine,
             placeName:         c.name,
             placeAddress:      c.address,
             placeLatitude:     c.latitude,
             placeLongitude:    c.longitude,
-            actionDescription: "Head to \(c.name) and see what catches your eye.",
+            actionDescription: actionDescription,
             challenge:         nil,
-            mood:              .spontaneous,
-            reasonItFits:      "Highly scored based on your preferences and location.",
+            mood:              mood,
+            reasonItFits:      reasonItFits,
             costEstimate:      cost,
             timeEstimate:      30,
             distanceDescription: scored.score.distanceLabel,
@@ -522,6 +536,81 @@ final class MoveGenerationService {
                           placeLatitude: c.latitude, placeLongitude: c.longitude,
                           baseTime: 30)
         return move
+    }
+
+    // MARK: - Fallback Copy Templates
+    // Category-aware title / setup / action / mood.
+    // Written to match MOVES voice: short, specific, no clichés, no "great spot".
+    private func fallbackCopy(
+        for category: MoveCategory,
+        name: String,
+        score: CandidateScore
+    ) -> (title: String, setupLine: String, actionDescription: String, mood: MoveMood) {
+        switch category {
+        case .coffee:
+            return (
+                title: "Take the Window Seat",
+                setupLine: "\(name) is open and worth the walk.",
+                actionDescription: "Order something you haven't tried before. Find the best seat. Stay long enough for a second cup.",
+                mood: .calm
+            )
+        case .food:
+            return (
+                title: "Sit Down, Order Well",
+                setupLine: "\(name) is the move right now.",
+                actionDescription: "Go in without checking the menu first. Order what sounds right in the moment. That's the whole plan.",
+                mood: .spontaneous
+            )
+        case .park, .nature:
+            return (
+                title: "Get Outside",
+                setupLine: "\(name) is close enough to have no excuse.",
+                actionDescription: "Leave your headphones. Walk until something catches your eye. Turn around when it feels right.",
+                mood: .calm
+            )
+        case .nightlife:
+            return (
+                title: "One Round",
+                setupLine: "\(name). Worth showing up for.",
+                actionDescription: "Go in, order something neat, and see where the night takes it. No plan required.",
+                mood: .spontaneous
+            )
+        case .bookstore:
+            return (
+                title: "Browse Until Something Finds You",
+                setupLine: "\(name) has exactly what you didn't know you needed.",
+                actionDescription: "Walk in without a title in mind. Spend 20 minutes. Leave with something or leave with nothing — either is fine.",
+                mood: .analog
+            )
+        case .culture:
+            return (
+                title: "Give It an Hour",
+                setupLine: "\(name) is worth slowing down for.",
+                actionDescription: "Don't read every label. Find one thing you want to actually look at. Stay with it.",
+                mood: .creative
+            )
+        case .music:
+            return (
+                title: "Find Something to Listen To",
+                setupLine: "\(name) has the kind of selection worth digging through.",
+                actionDescription: "Pull a record you don't know. Read the back. That's the whole move.",
+                mood: .analog
+            )
+        case .shopping:
+            return (
+                title: "Look Around",
+                setupLine: "\(name) is the kind of place you leave with something unexpected.",
+                actionDescription: "Don't go looking for anything specific. That's the point.",
+                mood: .spontaneous
+            )
+        default:
+            return (
+                title: "Worth the Walk",
+                setupLine: "\(name). Go.",
+                actionDescription: "Show up. See what it is. That's enough.",
+                mood: .spontaneous
+            )
+        }
     }
 
     // MARK: - Infer MoveCategory from types

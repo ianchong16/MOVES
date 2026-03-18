@@ -126,12 +126,16 @@ struct MoveContext {
             if !opensLate {
                 excluded.append(contentsOf: ["park", "nature", "trail", "Park", "Nature", "restaurant", "food market"])
             }
-        case 6..<17:
+        case 15..<17:
+            // Dead zone 3–5pm: exclude both nightlife AND sit-down restaurants.
+            // Too late for lunch, too early for dinner, too early for evening bars.
+            // Cafes, bookstores, galleries, markets — contextually correct.
+            // NOTE: must appear before 6..<17 — Swift switch is first-match.
+            excluded.append(contentsOf: ["nightlife", "bar", "club", "lounge", "Nightlife", "speakeasy",
+                                         "restaurant", "diner", "Food"])
+        case 6..<15:
             // Morning + afternoon: no nightlife
             excluded.append(contentsOf: ["nightlife", "bar", "club", "lounge", "Nightlife", "speakeasy"])
-        case 15..<17:
-            // Dead zone 3–5pm: skip sit-down restaurants (too late for lunch, too early for dinner)
-            excluded.append(contentsOf: ["restaurant", "diner", "Food"])
         default:
             break
         }

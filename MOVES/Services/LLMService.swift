@@ -111,12 +111,14 @@ struct LLMService {
                 model: "gpt-4o-mini",
                 temperature: 0.3,
                 maxTokens: 800,
-                timeoutSeconds: 10
+                timeoutSeconds: 20   // raised from 10 — gpt-4o-mini cold starts can exceed 10s
             )
             print("[LLM Judge] ✅ Got \(result.judgments.count) judgments")
             return result.judgments
         } catch {
-            print("[LLM Judge] ⚠️ Failed: \(error.localizedDescription) — continuing unfiltered")
+            // Log which candidates went unfiltered so quality drift is visible
+            let names = candidates.prefix(3).map { $0.candidate.name }.joined(separator: ", ")
+            print("[LLM Judge] ⚠️ Failed (\(error.localizedDescription)) — top candidates unfiltered: \(names)...")
             return []
         }
     }
@@ -619,6 +621,21 @@ struct LLMService {
     }
 
     private func appendHistorySection(to parts: inout [String], context: MoveContext) {
+        // Cold-start: new user with no history.
+        // The first move is the app's strongest pitch. Tell the LLM to treat it that way.
+        let isNewUser = context.recentMoveTitles.isEmpty
+            && context.positiveCategoryAffinity.isEmpty
+            && context.negativeCategoryAffinity.isEmpty
+        if isNewUser {
+            parts.append("")
+            parts.append("## First Impression Mode (no history yet)")
+            parts.append("This user is brand new. This is their first or one of their earliest generated moves.")
+            parts.append("No taste history is available — lean heavily on their onboarding preferences (vibes, place types, energy level).")
+            parts.append("Pick the candidate with the strongest combination of quality, story, and character.")
+            parts.append("Aim for a move that feels: specific (not generic), discoverable (not a household name), and immediately compelling.")
+            parts.append("reasonItFits should reference something from their stated vibes or place preferences — make it feel personal even without history.")
+        }
+
         if !context.recentMoveTitles.isEmpty {
             parts.append("")
             parts.append("## Recent Moves (avoid repeating these)")

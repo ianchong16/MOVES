@@ -26,11 +26,15 @@ struct HomeView: View {
                         .foregroundStyle(Color.movesPrimaryText)
 
                     if appState.generationError {
-                        Text("Nothing found nearby.\nAdjust filters or try again.")
+                        errorStateView
+                    } else if appState.isGeneratingMove,
+                              let remixMsg = appState.remixLoadingMessage {
+                        // Remix: show a reason-specific message so the app feels aware
+                        Text(remixMsg)
                             .font(MOVESTypography.monoSmall())
                             .kerning(0.5)
-                            .multilineTextAlignment(.center)
                             .foregroundStyle(Color.movesGray300)
+                            .transition(.opacity)
                     } else {
                         Text("What's your next one?")
                             .font(MOVESTypography.serif())
@@ -65,6 +69,45 @@ struct HomeView: View {
         .padding(.horizontal, MOVESSpacing.screenH)
         .padding(.bottom, MOVESSpacing.md)
         .background(Color.movesPrimaryBg)
+    }
+
+    // MARK: - Error State
+    // Reason-specific copy + recovery actions.
+    // Appears inline where the tagline normally lives — no modal, no interruption.
+    private var errorStateView: some View {
+        let reason = appState.generationErrorReason
+        return VStack(spacing: MOVESSpacing.xs) {
+            Text(reason.headline)
+                .font(MOVESTypography.monoSmall())
+                .kerning(0.5)
+                .foregroundStyle(Color.movesGray400)
+
+            Text(reason.subline)
+                .font(MOVESTypography.monoSmall())
+                .kerning(0.3)
+                .foregroundStyle(Color.movesGray300)
+                .multilineTextAlignment(.center)
+
+            // "Clear filters" shortcut — only when filters are the likely cause
+            if reason.suggestClearFilters || appState.hasActiveFilters {
+                Button {
+                    withAnimation(MOVESAnimation.quick) {
+                        appState.resetFilters()
+                        appState.generationError = false
+                    }
+                    HapticManager.impact()
+                    appState.generateMove()
+                } label: {
+                    Text("Clear filters & retry")
+                        .font(MOVESTypography.monoSmall())
+                        .kerning(0.5)
+                        .foregroundStyle(Color.movesPrimaryText)
+                        .underline()
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+            }
+        }
     }
 
     // MARK: - Filters
