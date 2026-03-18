@@ -20,7 +20,16 @@ struct MOVESApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // Schema changed (new fields added) — destroy and recreate the store.
+            // This is safe during development; all move history is wiped on schema incompatibility.
+            print("[MOVESApp] ⚠️ ModelContainer failed (\(error)). Destroying store and retrying...")
+            do {
+                let destroyConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, allowsSave: true)
+                try? FileManager.default.removeItem(at: destroyConfig.url)
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer even after store reset: \(error)")
+            }
         }
     }()
 
