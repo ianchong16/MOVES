@@ -270,6 +270,10 @@ struct LLMService {
         9. Popular, well-reviewed venues are EXCELLENT choices — high ratings with many reviews are proof of genuine enjoyment. Do not shy away from well-known or busy spots. The goal is a move the user will actually love, not obscurity for its own sake.
         10. Match the candidate to the time of day. A bar or restaurant at 9pm beats a park. A café beats a bar at 8am. Time-of-day fit matters more than raw taste score when the mismatch is severe.
         11. Respond ONLY with valid JSON in the exact format specified.
+        12. FACTUAL ACCURACY — CRITICAL: Each candidate includes a "Venue types" line that is ground truth about what the place actually is. You MUST base your description on this data. \
+            If a venue is listed as "Indian Restaurant", describe it as an Indian restaurant — NEVER call it Italian, Korean, French, or any other cuisine. \
+            Never invent cuisine types, food styles, atmosphere, or any quality not supported by the provided data (name, types, summary, rating). \
+            If you are unsure of a specific quality, describe what you DO know rather than guessing.
 
         QUALITY EXAMPLES:
         Good titles: "Back Room at Strand", "Sunday at Prospect Park", "Devocion Before Noon"

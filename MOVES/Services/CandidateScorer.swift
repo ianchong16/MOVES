@@ -34,11 +34,26 @@ struct ScoredCandidate {
         var lines: [String] = []
         let c = candidate
 
-        // Header: "Idle Time Books — Bookstore  [Score: 9.1 ★]"
-        let primaryType = c.types.first
-            .map { $0.replacingOccurrences(of: "_", with: " ").capitalized } ?? ""
+        // Header: "Curry Palace — Indian Restaurant  [Score: 8.2 ★]"
+        // Filter out generic Google Places noise types — keep the specific ones that tell the LLM
+        // what kind of place this actually is (cuisine, venue category, etc.)
+        let noiseTypes: Set<String> = [
+            "point_of_interest", "establishment", "food", "store", "health",
+            "place_of_worship", "premise", "locality", "political", "route",
+            "sublocality", "neighborhood", "colloquial_area", "natural_feature"
+        ]
+        let readableTypes = c.types
+            .filter { !noiseTypes.contains($0) }
+            .map { $0.replacingOccurrences(of: "_", with: " ").capitalized }
+        let primaryType = readableTypes.first ?? ""
         let typeSuffix = primaryType.isEmpty ? "" : " — \(primaryType)"
         lines.append("\(c.name)\(typeSuffix)  [Score: \(score.label) ★]")
+
+        // Full venue type list — ground truth for the LLM so it does NOT invent cuisine or atmosphere.
+        // "Indian Restaurant, Restaurant" prevents confabulation like "Italian and Korean fusion."
+        if readableTypes.count > 1 {
+            lines.append("   Venue types: \(readableTypes.prefix(4).joined(separator: ", "))")
+        }
 
         // Score breakdown — helps LLM make informed picks
         lines.append("   Scoring: taste=\(fmt(score.tasteMatch)) quality=\(fmt(score.qualitySignal)) proximity=\(fmt(score.distance)) novelty=\(fmt(score.novelty)) open=\(fmt(score.openConfidence))")
