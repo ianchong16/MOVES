@@ -58,39 +58,7 @@ struct ProfileEditView: View {
                 }
 
                 // ── 3. Friction ───────────────────────────────────────
-                profileSection(label: "FRICTION", title: "Energy level.") {
-                    VStack(spacing: 0) {
-                        ForEach(EnergyLevel.allCases) { level in
-                            OnboardingSingleCard(
-                                title: level.rawValue,
-                                isSelected: profile.energyLevel == level
-                            ) {
-                                HapticManager.selection()
-                                withAnimation(MOVESAnimation.quick) {
-                                    profile.energyLevel = level
-                                }
-                            }
-                        }
-                    }
-                }
-
-                profileSection(title: "How far\nwill you go?") {
-                    VStack(spacing: 0) {
-                        ForEach(DistanceRange.allCases) { range in
-                            OnboardingSingleCard(
-                                title: range.rawValue,
-                                isSelected: profile.maxDistance == range
-                            ) {
-                                HapticManager.selection()
-                                withAnimation(MOVESAnimation.quick) {
-                                    profile.maxDistance = range
-                                }
-                            }
-                        }
-                    }
-                }
-
-                profileSection(title: "Ideal spend?") {
+                profileSection(label: "FRICTION", title: "What are you usually\nwilling to spend?") {
                     VStack(spacing: 0) {
                         ForEach(BudgetPreference.allCases) { budget in
                             OnboardingSingleCard(
@@ -106,16 +74,32 @@ struct ProfileEditView: View {
                     }
                 }
 
-                profileSection(title: "Usually solo,\nwith someone,\nor in a group?") {
+                profileSection(title: "How do you feel\nabout new places?") {
                     VStack(spacing: 0) {
-                        ForEach(SocialMode.allCases) { mode in
+                        ForEach(NoveltyPreference.allCases) { pref in
                             OnboardingSingleCard(
-                                title: mode.rawValue,
-                                isSelected: profile.socialPreference == mode
+                                title: pref.rawValue,
+                                isSelected: profile.noveltyPreference == pref
                             ) {
                                 HapticManager.selection()
                                 withAnimation(MOVESAnimation.quick) {
-                                    profile.socialPreference = mode
+                                    profile.noveltyPreference = pref
+                                }
+                            }
+                        }
+                    }
+                }
+
+                profileSection(title: "Are you more\nof a...") {
+                    VStack(spacing: 0) {
+                        ForEach(DayNight.allCases) { time in
+                            OnboardingSingleCard(
+                                title: time.rawValue,
+                                isSelected: profile.timePreference == time
+                            ) {
+                                HapticManager.selection()
+                                withAnimation(MOVESAnimation.quick) {
+                                    profile.timePreference = time
                                 }
                             }
                         }

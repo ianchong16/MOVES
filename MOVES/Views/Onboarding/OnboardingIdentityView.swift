@@ -16,7 +16,7 @@ struct OnboardingIdentityView: View {
                         sectionLabel("IDENTITY")
                             .id("identityTop")
 
-                        Text("Why are you\nusually bored?")
+                        Text("What usually\nkills the vibe?")
                             .font(MOVESTypography.largeTitle())
                             .foregroundStyle(Color.movesPrimaryText)
 
@@ -37,7 +37,7 @@ struct OnboardingIdentityView: View {
 
                     if viewModel.selectedBoredomReason != nil {
                         VStack(alignment: .leading, spacing: MOVESSpacing.lg) {
-                            Text("Which sounds\nmost like you?")
+                            Text("What are you\nactually after?")
                                 .font(MOVESTypography.largeTitle())
                                 .foregroundStyle(Color.movesPrimaryText)
                                 .id("coreDesireSection")

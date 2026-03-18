@@ -40,6 +40,9 @@ final class UserProfile {
     var cuisinePreferences: [String]      // From CuisinePreference enum raw values
     var dietaryRestrictions: [String]     // From DietaryRestriction enum raw values
 
+    // Discovery — Section 5 (new)
+    var noveltyPreference: NoveltyPreference?
+
     // Meta
     var onboardingCompleted: Bool
     var createdAt: Date
@@ -74,10 +77,10 @@ final class UserProfile {
 // MARK: - Onboarding Enums
 
 enum BoredomReason: String, Codable, CaseIterable, Identifiable {
-    case noIdeas = "No ideas"
-    case noEnergy = "No energy"
-    case noPeople = "No one to go with"
-    case tooManyOptions = "Too many options"
+    case noIdeas = "My mind goes blank"
+    case noEnergy = "Starting feels like too much"
+    case noPeople = "Going alone feels like a lot"
+    case tooManyOptions = "Too many options, none feel right"
 
     var id: String { rawValue }
 
@@ -206,7 +209,6 @@ enum Dealbreaker: String, Codable, CaseIterable, Identifiable {
     case touristTraps = "Tourist traps"
     case loudCrowded = "Loud / crowded places"
     case noOutdoorSeating = "No outdoor seating"
-    case badReviews = "Poorly reviewed (under 4★)"
     case genericCorporate = "Generic / corporate feel"
 
     var id: String { rawValue }
@@ -265,4 +267,26 @@ enum PersonalRule: String, Codable, CaseIterable, Identifiable {
     case dateFriendly = "Date-friendly"
 
     var id: String { rawValue }
+}
+
+// MARK: - Novelty Preference
+// Evergreen signal: does the user want discovery or reliability?
+// "Discover" → LLM/TasteGate prefers unfamiliar, editorially unexpected candidates.
+// "Familiar" → system prefers candidates matching existing vibes/anchors closely.
+// "Mixed" → no modifier applied (balanced behavior).
+
+enum NoveltyPreference: String, Codable, CaseIterable, Identifiable {
+    case discover = "Show me something I've never tried"
+    case familiar = "Point me toward what I know I'll like"
+    case mixed    = "Mix it up — both"
+
+    var id: String { rawValue }
+
+    var shortText: String {
+        switch self {
+        case .discover: return "Discover"
+        case .familiar: return "Familiar"
+        case .mixed:    return "Mixed"
+        }
+    }
 }

@@ -165,7 +165,44 @@ struct TasteGate {
         // f) Feedback tag signal (-0.15 to +0.10) — learned from past move reviews
         let tagSignal = feedbackTagScore(candidate: candidate, context: context)
 
-        return min(1.0, vibeScore + placeScore + alwaysYesScore + anchorScore + ruleBoost + tagSignal)
+        // g) Novelty modifier (±0.1) — discovery vs. familiarity preference
+        let noveltyMod = noveltyModifier(candidate: candidate, context: context)
+
+        return min(1.0, max(0.0, vibeScore + placeScore + alwaysYesScore + anchorScore + ruleBoost + tagSignal + noveltyMod))
+    }
+
+    // MARK: - Novelty Modifier
+    // discover → penalise over-served categories (user has loved them before → push to explore)
+    // familiar → boost strong vibe/placeType matches (user wants comfort zone)
+    // mixed / nil → 0.0 (no modifier)
+
+    private static func noveltyModifier(candidate: PlaceCandidate, context: MoveContext) -> Double {
+        guard let novelty = context.noveltyPreference else { return 0.0 }
+        let lowerNovelty = novelty.lowercased()
+
+        if lowerNovelty.contains("never tried") || lowerNovelty.contains("discover") {
+            // Penalise candidates from the user's top-3 most-loved categories
+            // (They've been there, done that — push them somewhere fresh)
+            let topLovedCategories = context.positiveCategoryAffinity
+                .sorted { $0.value > $1.value }
+                .prefix(3)
+                .map { $0.key.lowercased() }
+            let candidateCategory = candidate.types.map { $0.lowercased() }
+            let isOverServed = candidateCategory.contains { type in
+                topLovedCategories.contains { loved in type.contains(loved) || loved.contains(type) }
+            }
+            return isOverServed ? -0.1 : 0.0
+
+        } else if lowerNovelty.contains("know") || lowerNovelty.contains("familiar") {
+            // Boost candidates that exactly match user's vibes or place types
+            let types = candidate.types.map { $0.lowercased() }
+            let vibeScore = vibeAlignment(types: types, vibes: context.vibes)
+            let placeScore = placeTypeAlignment(types: types, placeTypes: context.placeTypes)
+            // Only boost if there's genuine alignment (not a weak 0.1 match)
+            return (vibeScore + placeScore) >= 0.5 ? 0.1 : 0.0
+        }
+
+        return 0.0
     }
 
     // MARK: - Vibe Alignment

@@ -97,6 +97,12 @@ struct MoveContext {
     // "Daytime", "Nighttime", "Either" — boosts/penalizes venues by time alignment
     let userTimePreference: String?
 
+    // Novelty preference — evergreen discovery vs. reliability axis
+    // "Show me something I've never tried" → discover (penalty on over-served categories)
+    // "Point me toward what I know I'll like" → familiar (boost on vibe/placeType matches)
+    // "Mix it up — both" / nil → no modifier
+    let noveltyPreference: String?
+
     // Session-level ephemeral intent (Phase 5 — finally wired to pipeline)
     // selectedMood: user's mood tap on home screen — "Solo Reset", "Night Move", "Analog", etc.
     // timeAvailable: how much time the user has — "Under 30 min", "All day", etc.
@@ -391,6 +397,7 @@ struct ContextBuilder {
             queryRotationIndex:             queryRotationIndex,
             whenMode:                       whenMode,
             userTimePreference:             profile?.timePreference?.rawValue,
+            noveltyPreference:              profile?.noveltyPreference?.rawValue,
             selectedMood:              selectedMood?.rawValue,
             timeAvailable:             timeAvailable?.rawValue,
             feedbackPositiveTags:      feedbackPositiveTags,

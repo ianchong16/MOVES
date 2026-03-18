@@ -549,7 +549,22 @@ struct LLMService {
         }
 
         if let transport = context.transport       { parts.append("- Gets around by: \(transport)") }
+        if let timePref = context.userTimePreference { parts.append("- Time of day preference: \(timePref)") }
         if !context.personalRules.isEmpty          { parts.append("- Personal rules: \(context.personalRules.joined(separator: ", "))") }
+
+        // Novelty preference — shapes discovery vs. reliability bias
+        if let novelty = context.noveltyPreference {
+            parts.append("")
+            parts.append("## Novelty Preference")
+            switch novelty.lowercased() {
+            case let n where n.contains("never tried") || n.contains("discover"):
+                parts.append("This user wants to be taken somewhere they've never been. STRONGLY prefer candidates with categories they haven't explored yet. Avoid obvious, over-served choices. Your reasonItFits should explain what makes this feel fresh and editorial — not just 'a good coffee shop' but 'a coffee shop worth crossing the city for.'")
+            case let n where n.contains("know") || n.contains("familiar"):
+                parts.append("This user wants comfort and reliability. Prefer candidates that closely match their stated vibes and place types. Choose places that feel like a natural extension of what they already love. Your reasonItFits should connect the venue directly back to their taste profile.")
+            default:
+                parts.append("This user is open to both familiar and new. Balance comfort-zone picks with one genuinely surprising option.")
+            }
+        }
 
         // Taste anchors — places the user already loves (match this energy)
         if !context.tasteAnchors.isEmpty {

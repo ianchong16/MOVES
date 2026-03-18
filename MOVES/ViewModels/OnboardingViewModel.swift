@@ -3,7 +3,12 @@ import Observation
 
 // MARK: - Onboarding View Model
 // Manages the multi-step onboarding flow.
-// Sections 1-3 for MVP, with hooks for 4-6 later.
+// Steps: Welcome (0), Identity (1), Taste (2), TasteAnchors (3),
+//        Dealbreakers (4), Friction (5), Location (6), Complete (7)
+//
+// Friction step no longer asks for energy level, distance, or social preference —
+// those are session signals handled by home screen filters.
+// New in Friction: noveltyPreference (discover vs. familiar axis) and dayNight (time of day).
 
 @Observable
 final class OnboardingViewModel {
@@ -19,14 +24,14 @@ final class OnboardingViewModel {
     var selectedVibes: Set<String> = []
     var selectedPlaceTypes: Set<String> = []
 
-    // Section 3: Friction Profile
-    var selectedEnergyLevel: EnergyLevel?
-    var selectedMaxDistance: DistanceRange?
+    // Section 5: Friction Profile (evergreen signals only)
     var selectedBudget: BudgetPreference?
-    var selectedSocialPref: SocialMode?
-    var selectedDayNight: DayNight?
-    var selectedIndoorOutdoor: IndoorOutdoor?
+    var selectedNoveltyPref: NoveltyPreference?    // NEW — discover vs. familiar
+    var selectedDayNight: DayNight?                // wired (was in model, never asked until now)
     var selectedTransport: TransportMode?
+
+    // Kept for ProfileEditView backward-compat but NOT asked in onboarding:
+    // energyLevel, maxDistance, socialPreference are session signals → home screen filters
 
     // Section 3b: Taste Anchors (places user already loves)
     var tasteAnchors: [String] = []
@@ -54,7 +59,7 @@ final class OnboardingViewModel {
         case 2: return !selectedVibes.isEmpty && !selectedPlaceTypes.isEmpty
         case 3: return true  // Taste Anchors — skippable
         case 4: return true  // Dealbreakers — skippable
-        case 5: return selectedEnergyLevel != nil
+        case 5: return selectedNoveltyPref != nil  // Novelty is the required signal for this step
         case 6: return true  // Location — skip allowed
         case 7: return true  // Complete
         default: return true
@@ -149,13 +154,12 @@ final class OnboardingViewModel {
         profile.coreDesire = selectedCoreDesire
         profile.selectedVibes = Array(selectedVibes)
         profile.selectedPlaceTypes = Array(selectedPlaceTypes)
-        profile.energyLevel = selectedEnergyLevel
-        profile.maxDistance = selectedMaxDistance
+        // Friction: only evergreen signals
         profile.budgetPreference = selectedBudget
-        profile.socialPreference = selectedSocialPref
+        profile.noveltyPreference = selectedNoveltyPref
         profile.timePreference = selectedDayNight
-        profile.indoorOutdoor = selectedIndoorOutdoor
         profile.transportMode = selectedTransport
+        // Taste content
         profile.tasteAnchors = tasteAnchors
         profile.dealbreakers = Array(selectedDealbreakers)
         profile.alwaysYes = Array(selectedAlwaysYes)
