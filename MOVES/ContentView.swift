@@ -19,6 +19,8 @@ struct RootView: View {
     // Using sheet(item:) so the move is guaranteed non-nil when the sheet renders,
     // eliminating the blank-screen race condition of sheet(isPresented:) + optional.
     @State private var completedMove: Move? = nil
+    @State private var reactionMove: Move? = nil
+    @State private var remixMove: Move? = nil     // Move pending remix reason feedback
 
     var body: some View {
         Group {
@@ -54,7 +56,7 @@ struct RootView: View {
                         move.wasRemixed = true   // feedback signal: user passed on this move
                         appState.showingMoveDetail = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            appState.generateMove(modelContext: modelContext, isRemix: true)
+                            remixMove = move
                         }
                     },
                     onComplete: {
@@ -79,7 +81,7 @@ struct RootView: View {
         .sheet(item: $completedMove) { move in
             MemoryPromptView(
                 moveTitle: move.title,
-                onSave: { note, image in
+                onSave: { note, image, videoURL, song in
                     // Persist note
                     if let note {
                         move.completionNote = note
@@ -89,12 +91,70 @@ struct RootView: View {
                         let filename = PhotoStorageService.save(image: image, for: move.id)
                         move.photoFilename = filename
                     }
+                    // Persist video (async compression)
+                    if let videoURL {
+                        Task {
+                            let filename = await VideoStorageService.save(videoURL: videoURL, for: move.id)
+                            await MainActor.run {
+                                move.videoFilename = filename
+                            }
+                            if let filename {
+                                let dur = await VideoStorageService.duration(filename: filename)
+                                await MainActor.run {
+                                    move.mediaDurationSeconds = dur
+                                }
+                            }
+                        }
+                    }
+                    // Persist song
+                    if let song {
+                        move.songTitle = song.title
+                        move.songArtist = song.artist
+                        move.songPreviewURL = song.previewURL?.absoluteString
+                        move.songArtworkURL = song.artworkURL?.absoluteString
+                        move.appleMusicID = song.id
+                    }
+                    let capturedMove = move
                     completedMove = nil
+                    // Chain → reaction sheet after memory prompt dismisses
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        reactionMove = capturedMove
+                    }
                 },
                 onSkip: {
+                    let capturedMove = move
                     completedMove = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        reactionMove = capturedMove
+                    }
                 }
             )
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $reactionMove) { move in
+            MoveReactionView(
+                move: move,
+                onAddToFavorites: { placeName in
+                    if let profile = appState.userProfile,
+                       !profile.tasteAnchors.contains(placeName) {
+                        profile.tasteAnchors.append(placeName)
+                        profile.updatedAt = Date()
+                    }
+                }
+            ) {
+                reactionMove = nil
+            }
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $remixMove) { move in
+            RemixReasonView { reason in
+                move.remixReason = reason?.rawValue
+                remixMove = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    appState.generateMove(modelContext: modelContext, isRemix: true, remixReason: reason)
+                }
+            }
+            .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $appState.showingPaywall) {

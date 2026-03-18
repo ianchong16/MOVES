@@ -15,22 +15,36 @@ struct JournalView: View {
     @State private var selectedSection: JournalSection = .saved
     // Tapping a card opens it in a detail sheet
     @State private var selectedJournalMove: Move? = nil
+    // Memory editing — chained sheet after detail view dismisses
+    @State private var memoryEditMove: Move? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
-            Text("JOURNAL")
-                .font(MOVESTypography.monoSmall())
-                .kerning(3)
-                .foregroundStyle(Color.movesGray300)
-                .padding(.horizontal, MOVESSpacing.screenH)
-                .padding(.top, MOVESSpacing.xl)
+            HStack(alignment: .bottom) {
+                VStack(alignment: .leading, spacing: MOVESSpacing.xs) {
+                    Text("JOURNAL")
+                        .font(MOVESTypography.monoSmall())
+                        .kerning(3)
+                        .foregroundStyle(Color.movesGray300)
 
-            Text(selectedSection == .saved ? "Saved" : "Completed")
-                .font(MOVESTypography.largeTitle())
-                .foregroundStyle(Color.movesPrimaryText)
-                .padding(.horizontal, MOVESSpacing.screenH)
-                .padding(.top, MOVESSpacing.xs)
+                    Text(selectedSection == .saved ? "Saved" : "Completed")
+                        .font(MOVESTypography.largeTitle())
+                        .foregroundStyle(Color.movesPrimaryText)
+                }
+                Spacer()
+                // Streak indicator (only on Completed tab, streak >= 2)
+                if selectedSection == .completed,
+                   let streakLabel = StreakService.streakLabel(completedMoves: completedMoves) {
+                    Text(streakLabel)
+                        .font(MOVESTypography.monoSmall())
+                        .kerning(2)
+                        .foregroundStyle(Color.movesGray300)
+                        .padding(.bottom, MOVESSpacing.xs)
+                }
+            }
+            .padding(.horizontal, MOVESSpacing.screenH)
+            .padding(.top, MOVESSpacing.xl)
 
             // Section toggle — two text buttons, underline on selected
             HStack(spacing: MOVESSpacing.lg) {
@@ -64,44 +78,153 @@ struct JournalView: View {
 
             // Content
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 0) {
-                    let moves = selectedSection == .saved ? savedMoves : completedMoves
-                    if moves.isEmpty {
-                        emptyState
-                    } else {
-                        ForEach(moves) { move in
-                            Button {
-                                selectedJournalMove = move
-                            } label: {
-                                JournalMoveCard(move: move)
+                if selectedSection == .saved {
+                    // Saved moves — flat list (no timeline)
+                    LazyVStack(spacing: 0) {
+                        if savedMoves.isEmpty {
+                            emptyState
+                        } else {
+                            ForEach(savedMoves) { move in
+                                Button {
+                                    selectedJournalMove = move
+                                } label: {
+                                    JournalMoveCard(move: move)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
+                    .padding(.top, MOVESSpacing.md)
+                    .padding(.bottom, MOVESSpacing.xxxl)
+                } else {
+                    // Completed moves — vertical timeline
+                    VStack(spacing: 0) {
+                        if completedMoves.isEmpty {
+                            emptyState
+                                .padding(.top, MOVESSpacing.md)
+                        } else {
+                            // "On This Day" nostalgia card
+                            OnThisDayView(moves: completedMoves)
+                                .padding(.top, MOVESSpacing.md)
+
+                            // Timeline
+                            TimelineView(moves: completedMoves) { move in
+                                selectedJournalMove = move
+                            }
+                        }
+                    }
+                    .padding(.bottom, MOVESSpacing.xxxl)
                 }
-                .padding(.top, MOVESSpacing.md)
-                .padding(.bottom, MOVESSpacing.xxxl)
             }
             .sheet(item: $selectedJournalMove) { move in
-                MoveDetailView(
-                    move: move,
-                    onSave: {
-                        move.isSaved = true
-                        selectedJournalMove = nil
+                if move.isCompleted {
+                    // Completed moves → MemoryDetailView (consistent with card preview)
+                    MemoryDetailView(
+                        move: move,
+                        onEditMemory: {
+                            selectedJournalMove = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                memoryEditMove = move
+                            }
+                        },
+                        onDismiss: {
+                            selectedJournalMove = nil
+                        }
+                    )
+                    .presentationDragIndicator(.visible)
+                } else {
+                    // Saved moves → full MoveDetailView (can complete from here)
+                    MoveDetailView(
+                        move: move,
+                        onSave: {
+                            move.isSaved = true
+                            selectedJournalMove = nil
+                        },
+                        onRemix: {
+                            selectedJournalMove = nil
+                        },
+                        onComplete: {
+                            move.isCompleted = true
+                            move.completedAt = Date()
+                            selectedJournalMove = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                memoryEditMove = move
+                            }
+                        },
+                        onDismiss: {
+                            selectedJournalMove = nil
+                        }
+                    )
+                    .presentationDragIndicator(.visible)
+                }
+            }
+            .sheet(item: $memoryEditMove) { move in
+                MemoryPromptView(
+                    moveTitle: move.title,
+                    onSave: { note, image, videoURL, song in
+                        // Persist note
+                        move.completionNote = note
+                        // Persist photo — save new or delete old
+                        if let image {
+                            let filename = PhotoStorageService.save(image: image, for: move.id)
+                            move.photoFilename = filename
+                        } else if move.photoFilename != nil {
+                            // User removed the photo
+                            if let old = move.photoFilename {
+                                PhotoStorageService.delete(filename: old)
+                            }
+                            move.photoFilename = nil
+                        }
+                        // Persist video — save new or delete old (async compression)
+                        if let videoURL {
+                            Task {
+                                let filename = await VideoStorageService.save(videoURL: videoURL, for: move.id)
+                                await MainActor.run {
+                                    move.videoFilename = filename
+                                }
+                                if let filename {
+                                    let dur = await VideoStorageService.duration(filename: filename)
+                                    await MainActor.run {
+                                        move.mediaDurationSeconds = dur
+                                    }
+                                }
+                            }
+                        } else if move.videoFilename != nil {
+                            if let old = move.videoFilename {
+                                VideoStorageService.delete(filename: old)
+                            }
+                            move.videoFilename = nil
+                            move.mediaDurationSeconds = nil
+                        }
+                        // Persist song — save new or clear old
+                        if let song {
+                            move.songTitle = song.title
+                            move.songArtist = song.artist
+                            move.songPreviewURL = song.previewURL?.absoluteString
+                            move.songArtworkURL = song.artworkURL?.absoluteString
+                            move.appleMusicID = song.id
+                        } else {
+                            move.songTitle = nil
+                            move.songArtist = nil
+                            move.songPreviewURL = nil
+                            move.songArtworkURL = nil
+                            move.appleMusicID = nil
+                        }
+                        memoryEditMove = nil
                     },
-                    onRemix: {
-                        // Remix doesn't apply from journal — just dismiss
-                        selectedJournalMove = nil
-                    },
-                    onComplete: {
-                        // Mark complete from saved view (no memory prompt in journal context)
-                        move.isCompleted = true
-                        move.completedAt = Date()
-                        selectedJournalMove = nil
-                    },
-                    onDismiss: {
-                        selectedJournalMove = nil
-                    }
+                    onSkip: { memoryEditMove = nil },
+                    existingNote: move.completionNote,
+                    existingImage: move.photoFilename.flatMap { PhotoStorageService.load(filename: $0) },
+                    existingSong: {
+                        guard let title = move.songTitle, let artist = move.songArtist else { return nil }
+                        return MusicService.SongResult(
+                            id: move.appleMusicID ?? "",
+                            title: title,
+                            artist: artist,
+                            artworkURL: move.songArtworkURL.flatMap { URL(string: $0) },
+                            previewURL: move.songPreviewURL.flatMap { URL(string: $0) }
+                        )
+                    }()
                 )
                 .presentationDragIndicator(.visible)
             }
@@ -152,6 +275,12 @@ struct JournalMoveCard: View {
         return PhotoStorageService.load(filename: filename)
     }
 
+    // Video thumbnail fallback — shown when no photo but video exists
+    private var journalVideoThumbnail: UIImage? {
+        guard journalPhoto == nil, let filename = move.videoFilename else { return nil }
+        return VideoStorageService.generateThumbnail(filename: filename)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
@@ -163,6 +292,23 @@ struct JournalMoveCard: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 200)
                     .clipped()
+            } else if let thumbnail = journalVideoThumbnail {
+                // Video thumbnail with play icon overlay
+                ZStack {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 200)
+                        .clipped()
+
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(Color.black.opacity(0.4))
+                        .clipShape(Circle())
+                }
             }
 
             // Text content
@@ -172,7 +318,7 @@ struct JournalMoveCard: View {
                     .font(MOVESTypography.monoSmall())
                     .kerning(2)
                     .foregroundStyle(Color.movesGray300)
-                    .padding(.top, journalPhoto != nil ? MOVESSpacing.md : 0)
+                    .padding(.top, (journalPhoto != nil || journalVideoThumbnail != nil) ? MOVESSpacing.md : 0)
 
                 // Title
                 Text(move.title)
@@ -191,6 +337,18 @@ struct JournalMoveCard: View {
                         .foregroundStyle(Color.movesGray500)
                         .lineSpacing(3)
                         .padding(.top, MOVESSpacing.xs)
+                }
+
+                // Song indicator
+                if let songTitle = move.songTitle {
+                    HStack(spacing: MOVESSpacing.xs) {
+                        Image(systemName: "music.note")
+                            .font(.system(size: 10))
+                        Text("\(songTitle)\(move.songArtist.map { " — \($0)" } ?? "")")
+                            .lineLimit(1)
+                    }
+                    .font(MOVESTypography.monoSmall())
+                    .foregroundStyle(Color.movesGray300)
                 }
 
                 // Metadata strip

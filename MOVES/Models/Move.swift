@@ -32,6 +32,7 @@ final class Move {
     // Metadata
     var createdAt: Date
     var generatedForLocation: String?  // City/neighborhood context
+    var placeTypes: [String]           // Google/MapKit place types for sub-category affinity
 
     // Trust signal — false means MapKit/LLM source; hours not API-verified
     var hoursVerified: Bool = false
@@ -40,8 +41,26 @@ final class Move {
     // Used by CandidateScorer.noveltyScore to de-prioritize dismissed categories
     var wasRemixed: Bool = false
 
+    // Why the user skipped this move — optional 1-tap reason from RemixReasonView.
+    // Feeds into pipeline scoring adjustments for the next generation.
+    var remixReason: String?
+
     // Journal memory
     var photoFilename: String?     // UUID-named JPEG in Documents dir; nil until photo is added
+    var videoFilename: String?     // UUID-named .mov in Documents dir; nil until video is added
+    var mediaDurationSeconds: Double?  // Video duration for UI display
+
+    // Song memory (Apple MusicKit)
+    var songTitle: String?
+    var songArtist: String?
+    var songPreviewURL: String?    // 30-sec AAC preview URL from Apple Music
+    var songArtworkURL: String?    // Album art thumbnail URL
+    var appleMusicID: String?      // MusicKit song ID for deep-linking / re-fetching
+
+    // Post-move micro feedback
+    var wouldGoBack: Bool?         // nil = not yet answered; true/false after reaction
+    var feedbackTags: [String]     // e.g. ["Great coffee", "Too crowded"]
+    var didChallenge: Bool = false // true if user completed the challenge
 
     init(
         title: String,
@@ -79,6 +98,8 @@ final class Move {
         self.isSaved = false
         self.isCompleted = false
         self.createdAt = Date()
+        self.feedbackTags = []
+        self.placeTypes = []
     }
 }
 
@@ -200,4 +221,51 @@ enum IndoorOutdoor: String, Codable, CaseIterable, Identifiable {
     case either = "Either"
 
     var id: String { rawValue }
+}
+
+// MARK: - When Mode (P3 — Planning Ahead)
+// "Right now" = current default behavior.
+// "Later today" = same location, adjusted time-of-day scoring.
+// "This weekend" = relaxed distance, weekend time model, skip open-now gate.
+enum WhenMode: String, Codable, CaseIterable, Identifiable {
+    case rightNow    = "Right Now"
+    case laterToday  = "Later Today"
+    case thisWeekend = "This Weekend"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .rightNow:    return "bolt"
+        case .laterToday:  return "clock"
+        case .thisWeekend: return "calendar"
+        }
+    }
+
+    // Approximate hour offset for time-of-day scoring
+    var hourOffset: Int {
+        switch self {
+        case .rightNow:    return 0
+        case .laterToday:  return 5   // ~5 hours ahead (typical "later today" intent)
+        case .thisWeekend: return 0   // use Saturday afternoon as reference: handled by isWeekend flag
+        }
+    }
+
+    // Whether to skip the open-now feasibility gate
+    var skipOpenNowGate: Bool {
+        switch self {
+        case .rightNow:    return false
+        case .laterToday:  return true   // may not be open right now but will be later
+        case .thisWeekend: return true   // planning mode — don't hard-filter by current hours
+        }
+    }
+
+    // Distance multiplier — planning ahead relaxes distance constraints
+    var distanceMultiplier: Double {
+        switch self {
+        case .rightNow:    return 1.0
+        case .laterToday:  return 1.0
+        case .thisWeekend: return 1.8   // willing to travel further for weekend plans
+        }
+    }
 }

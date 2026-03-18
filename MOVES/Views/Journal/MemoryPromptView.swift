@@ -1,5 +1,7 @@
 import SwiftUI
 import PhotosUI
+import AVFoundation
+import CoreMedia
 
 // MARK: - Memory Prompt View
 // Slides up after the user marks a move as complete.
@@ -10,13 +12,26 @@ import PhotosUI
 
 struct MemoryPromptView: View {
     let moveTitle: String
-    let onSave: (String?, UIImage?) -> Void
+    let onSave: (String?, UIImage?, URL?, MusicService.SongResult?) -> Void
     let onSkip: () -> Void
+
+    // Edit mode — pre-fill with existing data when editing a previously saved memory
+    var existingNote: String? = nil
+    var existingImage: UIImage? = nil
+    var existingSong: MusicService.SongResult? = nil
+
+    /// True when opened to edit an already-saved memory (vs first-time capture)
+    private var isEditMode: Bool { existingNote != nil || existingImage != nil || existingSong != nil }
 
     @State private var note: String = ""
     @State private var selectedPhoto: PhotosPickerItem? = nil
     @State private var selectedImage: UIImage? = nil
     @State private var showingCamera = false
+    @State private var showingVideoCapture = false
+    @State private var selectedVideoURL: URL? = nil
+    @State private var videoThumbnail: UIImage? = nil
+    @State private var showingSongSearch = false
+    @State private var selectedSong: MusicService.SongResult? = nil
     @FocusState private var noteIsFocused: Bool
 
     var body: some View {
@@ -56,9 +71,13 @@ struct MemoryPromptView: View {
                         .foregroundStyle(Color.movesPrimaryText)
                         .padding(.top, MOVESSpacing.sm)
 
-                    // Photo section
-                    photoSection
+                    // Photo/Video section
+                    mediaSection
                         .padding(.top, MOVESSpacing.xl)
+
+                    // Song section
+                    songSection
+                        .padding(.top, MOVESSpacing.lg)
 
                     // Note field
                     noteField
@@ -76,6 +95,18 @@ struct MemoryPromptView: View {
         .sheet(isPresented: $showingCamera) {
             CameraPickerView(image: $selectedImage)
         }
+        .sheet(isPresented: $showingVideoCapture) {
+            VideoCaptureView(videoURL: $selectedVideoURL)
+        }
+        .sheet(isPresented: $showingSongSearch) {
+            SongSearchView(
+                onSelect: { song in
+                    selectedSong = song
+                    showingSongSearch = false
+                },
+                onDismiss: { showingSongSearch = false }
+            )
+        }
         .onChange(of: selectedPhoto) { _, newItem in
             Task {
                 if let data = try? await newItem?.loadTransferable(type: Data.self),
@@ -84,18 +115,45 @@ struct MemoryPromptView: View {
                 }
             }
         }
+        .onAppear {
+            // Pre-fill in edit mode
+            if let existingNote, !existingNote.isEmpty {
+                note = existingNote
+            }
+            if let existingImage {
+                selectedImage = existingImage
+            }
+            if let existingSong {
+                selectedSong = existingSong
+            }
+        }
+        .onChange(of: selectedVideoURL) { _, newURL in
+            // Generate thumbnail when video is selected
+            if let url = newURL {
+                let asset = AVURLAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 400, height: 400)
+                let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+                if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                    videoThumbnail = UIImage(cgImage: cgImage)
+                }
+            } else {
+                videoThumbnail = nil
+            }
+        }
     }
 
-    // MARK: - Photo Section
-    private var photoSection: some View {
+    // MARK: - Media Section (Photo + Video)
+    private var mediaSection: some View {
         VStack(alignment: .leading, spacing: MOVESSpacing.sm) {
-            Text("ADD PHOTO")
+            Text("ADD PHOTO OR VIDEO")
                 .font(MOVESTypography.monoSmall())
                 .kerning(3)
                 .foregroundStyle(Color.movesGray300)
 
             if let image = selectedImage {
-                // Preview + tap to replace
+                // Photo preview
                 ZStack(alignment: .topTrailing) {
                     Image(uiImage: image)
                         .resizable()
@@ -104,12 +162,42 @@ struct MemoryPromptView: View {
                         .frame(height: 200)
                         .clipped()
 
-                    // Remove button
                     Button {
                         selectedImage = nil
                         selectedPhoto = nil
                     } label: {
-                        Text("✕")
+                        Text("\u{2715}")
+                            .font(MOVESTypography.mono())
+                            .foregroundStyle(Color.movesPrimaryBg)
+                            .padding(MOVESSpacing.sm)
+                            .background(Color.movesPrimaryText.opacity(0.6))
+                    }
+                    .padding(MOVESSpacing.sm)
+                }
+            } else if let thumbnail = videoThumbnail {
+                // Video thumbnail preview
+                ZStack(alignment: .topTrailing) {
+                    ZStack {
+                        Image(uiImage: thumbnail)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 200)
+                            .clipped()
+
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.white)
+                            .padding(14)
+                            .background(Color.black.opacity(0.4))
+                            .clipShape(Circle())
+                    }
+
+                    Button {
+                        selectedVideoURL = nil
+                        videoThumbnail = nil
+                    } label: {
+                        Text("\u{2715}")
                             .font(MOVESTypography.mono())
                             .foregroundStyle(Color.movesPrimaryBg)
                             .padding(MOVESSpacing.sm)
@@ -118,7 +206,7 @@ struct MemoryPromptView: View {
                     .padding(MOVESSpacing.sm)
                 }
             } else {
-                // Photo picker buttons
+                // Picker buttons
                 HStack(spacing: MOVESSpacing.sm) {
                     PhotosPicker(selection: $selectedPhoto, matching: .images) {
                         photoPickerButton(label: "LIBRARY", icon: "photo.on.rectangle")
@@ -129,6 +217,67 @@ struct MemoryPromptView: View {
                     } label: {
                         photoPickerButton(label: "CAMERA", icon: "camera")
                     }
+
+                    Button {
+                        showingVideoCapture = true
+                    } label: {
+                        photoPickerButton(label: "VIDEO", icon: "video")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Song Section
+    private var songSection: some View {
+        VStack(alignment: .leading, spacing: MOVESSpacing.sm) {
+            Text("ADD SONG")
+                .font(MOVESTypography.monoSmall())
+                .kerning(3)
+                .foregroundStyle(Color.movesGray300)
+
+            if let song = selectedSong {
+                // Selected song preview
+                HStack(spacing: MOVESSpacing.sm) {
+                    if let artworkURL = song.artworkURL {
+                        AsyncImage(url: artworkURL) { image in
+                            image.resizable().frame(width: 40, height: 40)
+                        } placeholder: {
+                            Rectangle().fill(Color.movesGray100).frame(width: 40, height: 40)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(song.title)
+                            .font(MOVESTypography.body())
+                            .foregroundStyle(Color.movesPrimaryText)
+                            .lineLimit(1)
+                        Text(song.artist)
+                            .font(MOVESTypography.caption())
+                            .foregroundStyle(Color.movesGray400)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        selectedSong = nil
+                    } label: {
+                        Text("\u{2715}")
+                            .font(MOVESTypography.mono())
+                            .foregroundStyle(Color.movesGray400)
+                    }
+                }
+                .padding(MOVESSpacing.sm)
+                .overlay(
+                    Rectangle()
+                        .stroke(Color.movesGray100, lineWidth: 0.5)
+                )
+            } else {
+                Button {
+                    showingSongSearch = true
+                } label: {
+                    photoPickerButton(label: "SEARCH", icon: "music.note")
                 }
             }
         }
@@ -175,10 +324,15 @@ struct MemoryPromptView: View {
     // MARK: - Action Buttons
     private var actionButtons: some View {
         VStack(spacing: MOVESSpacing.sm) {
-            MOVESPrimaryButton(title: "Save Memory") {
+            MOVESPrimaryButton(title: isEditMode ? "Update Memory" : "Save Memory") {
                 HapticManager.success()
                 let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-                onSave(trimmedNote.isEmpty ? nil : trimmedNote, selectedImage)
+                onSave(
+                    trimmedNote.isEmpty ? nil : trimmedNote,
+                    selectedImage,
+                    selectedVideoURL,
+                    selectedSong
+                )
             }
 
             Button(action: onSkip) {
