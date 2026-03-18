@@ -9,6 +9,7 @@ struct APIConfig {
 
     let googlePlacesKey: String
     let openAIKey: String
+    let eventbriteKey: String
 
     private init() {
         // Load from Secrets.plist (gitignored)
@@ -18,7 +19,11 @@ struct APIConfig {
            let oKey = dict["OPENAI_API_KEY"] as? String, !oKey.isEmpty {
             self.googlePlacesKey = gKey
             self.openAIKey = oKey
+            self.eventbriteKey = (dict["EVENTBRITE_KEY"] as? String) ?? ""
             print("[APIConfig] ✅ Keys loaded from Secrets.plist")
+            if self.eventbriteKey.isEmpty {
+                print("[APIConfig] ℹ️ No Eventbrite key — events will be skipped")
+            }
             return
         }
 
@@ -26,6 +31,7 @@ struct APIConfig {
         // Add your keys to Secrets.plist (see Secrets.plist.template).
         self.googlePlacesKey = ""
         self.openAIKey = ""
+        self.eventbriteKey = ""
         print("[APIConfig] ⚠️ No API keys found — add them to Secrets.plist")
     }
 

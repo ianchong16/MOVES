@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 
 // MARK: - Home Screen
 // The single-screen soul of the app.
@@ -9,17 +8,6 @@ import SwiftData
 struct HomeView: View {
     @Bindable var appState: AppState
 
-    // Weekly completion stat — direct @Query on the view (not AppState) for live updates
-    @Query(filter: #Predicate<Move> { $0.isCompleted },
-           sort: \Move.completedAt, order: .reverse) private var allCompletedMoves: [Move]
-
-    private var movesThisWeek: Int {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        return allCompletedMoves.filter { ($0.completedAt ?? .distantPast) >= cutoff }.count
-    }
-
-    // Explicit init required — @Query private property would otherwise make the
-    // auto-generated memberwise init private, breaking ContentView's HomeView(appState:) call.
     init(appState: AppState) {
         _appState = Bindable(wrappedValue: appState)
     }
@@ -49,17 +37,9 @@ struct HomeView: View {
                             .foregroundStyle(Color.movesGray300)
                     }
 
-                    // Weekly completion stat — quiet positive reinforcement
-                    if movesThisWeek > 0 {
-                        Text("\(movesThisWeek) move\(movesThisWeek == 1 ? "" : "s") this week")
-                            .font(MOVESTypography.monoSmall())
-                            .kerning(0.5)
-                            .foregroundStyle(Color.movesGray300)
-                    }
-
-                    // Soft nudge when approaching daily limit (last 3 moves)
-                    if !appState.isPremium && appState.dailyMovesRemaining <= 3 && appState.dailyMovesRemaining > 0 {
-                        Text("\(appState.dailyMovesRemaining) move\(appState.dailyMovesRemaining == 1 ? "" : "s") left today")
+                    // Daily moves remaining — always visible for free users
+                    if !appState.isPremium {
+                        Text("\(appState.dailyMovesRemaining) move\(appState.dailyMovesRemaining == 1 ? "" : "s") today")
                             .font(MOVESTypography.monoSmall())
                             .kerning(0.5)
                             .foregroundStyle(Color.movesGray300)
@@ -119,7 +99,24 @@ struct HomeView: View {
                     Spacer()
                 }
 
-                // Row 2: Indoor/Outdoor + Budget
+                // Row 2: Mood
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(MoveMood.allCases) { mood in
+                            FilterChip(
+                                title: mood.rawValue,
+                                icon: mood.icon,
+                                isSelected: appState.selectedMood == mood
+                            ) {
+                                withAnimation(MOVESAnimation.quick) {
+                                    appState.selectedMood = (appState.selectedMood == mood) ? nil : mood
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Row 3: Indoor/Outdoor + Budget + Time
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 0) {
                         ForEach(IndoorOutdoor.allCases) { option in
@@ -133,7 +130,7 @@ struct HomeView: View {
                             }
                         }
 
-                        // Thin vertical divider
+                        // Divider
                         Rectangle()
                             .fill(Color.movesGray200)
                             .frame(width: 0.5, height: 16)
@@ -146,6 +143,42 @@ struct HomeView: View {
                             ) {
                                 withAnimation(MOVESAnimation.quick) {
                                     appState.selectedBudget = (appState.selectedBudget == cost) ? nil : cost
+                                }
+                            }
+                        }
+
+                        // Divider
+                        Rectangle()
+                            .fill(Color.movesGray200)
+                            .frame(width: 0.5, height: 16)
+                            .padding(.horizontal, 6)
+
+                        ForEach(TimeAvailable.allCases) { time in
+                            FilterChip(
+                                title: time.rawValue,
+                                isSelected: appState.selectedTime == time
+                            ) {
+                                withAnimation(MOVESAnimation.quick) {
+                                    appState.selectedTime = (appState.selectedTime == time) ? nil : time
+                                }
+                            }
+                        }
+
+                        // Divider
+                        Rectangle()
+                            .fill(Color.movesGray200)
+                            .frame(width: 0.5, height: 16)
+                            .padding(.horizontal, 6)
+
+                        // When mode (P3 — planning ahead)
+                        ForEach(WhenMode.allCases) { when in
+                            FilterChip(
+                                title: when.rawValue,
+                                icon: when.icon,
+                                isSelected: appState.selectedWhen == when
+                            ) {
+                                withAnimation(MOVESAnimation.quick) {
+                                    appState.selectedWhen = when
                                 }
                             }
                         }

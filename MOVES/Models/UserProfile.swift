@@ -26,8 +26,19 @@ final class UserProfile {
     var indoorOutdoor: IndoorOutdoor?
     var transportMode: TransportMode?
 
+    // Taste Anchors — Section 3 (places the user already loves)
+    var tasteAnchors: [String]            // Free-text place names (e.g. "Devocion Coffee")
+
+    // Dealbreakers + Always Yes — Section 4
+    var dealbreakers: [String]            // From Dealbreaker enum raw values
+    var alwaysYes: [String]               // From AlwaysYes enum raw values
+
     // Personal Rules — Section 5
     var personalRules: [String]           // From PersonalRule enum raw values
+
+    // Food Preferences — Section 4b (folded into Dealbreakers step)
+    var cuisinePreferences: [String]      // From CuisinePreference enum raw values
+    var dietaryRestrictions: [String]     // From DietaryRestriction enum raw values
 
     // Meta
     var onboardingCompleted: Bool
@@ -44,7 +55,12 @@ final class UserProfile {
         self.id = UUID()
         self.selectedVibes = []
         self.selectedPlaceTypes = []
+        self.tasteAnchors = []
+        self.dealbreakers = []
+        self.alwaysYes = []
         self.personalRules = []
+        self.cuisinePreferences = []
+        self.dietaryRestrictions = []
         self.onboardingCompleted = false
         self.createdAt = Date()
         self.updatedAt = Date()
@@ -183,6 +199,58 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable {
         case .transit: return "tram"
         }
     }
+}
+
+enum Dealbreaker: String, Codable, CaseIterable, Identifiable {
+    case chainRestaurants = "Chain restaurants"
+    case touristTraps = "Tourist traps"
+    case loudCrowded = "Loud / crowded places"
+    case noOutdoorSeating = "No outdoor seating"
+    case badReviews = "Poorly reviewed (under 4★)"
+    case genericCorporate = "Generic / corporate feel"
+
+    var id: String { rawValue }
+}
+
+enum AlwaysYes: String, Codable, CaseIterable, Identifiable {
+    case outdoorSeating = "Outdoor seating"
+    case localIndependent = "Local / independent"
+    case artOnWalls = "Art on the walls"
+    case goodLight = "Good natural light"
+    case vinylMusic = "Vinyl / music playing"
+    case windowSeats = "Window seats"
+    case quietAtmosphere = "Quiet atmosphere"
+    case lateNightHours = "Open late"
+
+    var id: String { rawValue }
+}
+
+enum CuisinePreference: String, Codable, CaseIterable, Identifiable {
+    case japanese = "Japanese"
+    case mexican = "Mexican"
+    case italian = "Italian"
+    case thai = "Thai"
+    case indian = "Indian"
+    case korean = "Korean"
+    case chinese = "Chinese"
+    case mediterranean = "Mediterranean"
+    case american = "American"
+    case vietnamese = "Vietnamese"
+    case middleEastern = "Middle Eastern"
+    case french = "French"
+
+    var id: String { rawValue }
+}
+
+enum DietaryRestriction: String, Codable, CaseIterable, Identifiable {
+    case vegan = "Vegan"
+    case vegetarian = "Vegetarian"
+    case glutenFree = "Gluten-free"
+    case halal = "Halal"
+    case kosher = "Kosher"
+    case dairyFree = "Dairy-free"
+
+    var id: String { rawValue }
 }
 
 enum PersonalRule: String, Codable, CaseIterable, Identifiable {

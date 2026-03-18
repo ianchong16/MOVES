@@ -12,6 +12,9 @@ struct MoveDetailView: View {
     var onRemix: () -> Void = {}
     var onComplete: () -> Void = {}
     var onDismiss: () -> Void = {}
+    /// When non-nil, shows memory section for completed moves and hides action buttons.
+    /// The callback dismisses the detail and opens the memory editor.
+    var onEditMemory: (() -> Void)? = nil
 
     @State private var showContent = false
     @State private var didSave = false
@@ -61,9 +64,16 @@ struct MoveDetailView: View {
                         .lineSpacing(5)
                         .padding(.top, MOVESSpacing.md)
 
+                    // Place name — bold, uppercase, anchors the eye
+                    Text(move.placeName.uppercased())
+                        .font(MOVESTypography.placeName())
+                        .kerning(1.5)
+                        .foregroundStyle(Color.movesPrimaryText)
+                        .padding(.top, MOVESSpacing.lg)
+
                     // Metadata strip — mono, cold
                     metadataStrip
-                        .padding(.top, MOVESSpacing.xl)
+                        .padding(.top, MOVESSpacing.md)
 
                     // Hours disclaimer — shown when data source can't confirm open status
                     if !move.hoursVerified {
@@ -97,15 +107,29 @@ struct MoveDetailView: View {
                     reasonBlock
                         .padding(.top, MOVESSpacing.xl)
 
+                    // Memory section — shown for completed moves opened from journal
+                    if move.isCompleted, onEditMemory != nil {
+                        // Hairline
+                        Rectangle()
+                            .fill(Color.movesGray100)
+                            .frame(height: 0.5)
+                            .padding(.top, MOVESSpacing.xl)
+
+                        memorySection
+                            .padding(.top, MOVESSpacing.lg)
+                    }
+
                     // Hairline
                     Rectangle()
                         .fill(Color.movesGray100)
                         .frame(height: 0.5)
                         .padding(.top, MOVESSpacing.xl)
 
-                    // Actions
-                    actionButtons
-                        .padding(.top, MOVESSpacing.lg)
+                    // Actions — hidden for completed moves in journal context
+                    if !(move.isCompleted && onEditMemory != nil) {
+                        actionButtons
+                            .padding(.top, MOVESSpacing.lg)
+                    }
                 }
                 .padding(.horizontal, MOVESSpacing.screenH)
                 .padding(.bottom, MOVESSpacing.xxxl)
@@ -168,11 +192,60 @@ struct MoveDetailView: View {
         }
     }
 
+    // MARK: - Memory Section
+    // Shown for completed moves opened from the journal.
+    // Displays existing photo + note, with an edit/add button.
+    private var memorySection: some View {
+        VStack(alignment: .leading, spacing: MOVESSpacing.sm) {
+            Text("MEMORY")
+                .font(MOVESTypography.monoSmall())
+                .kerning(3)
+                .foregroundStyle(Color.movesGray300)
+
+            // Photo — if saved
+            if let filename = move.photoFilename,
+               let photo = PhotoStorageService.load(filename: filename) {
+                Image(uiImage: photo)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 200)
+                    .clipped()
+            }
+
+            // Note — if saved
+            if let note = move.completionNote, !note.isEmpty {
+                Text("\"\(note)\"")
+                    .font(MOVESTypography.serif())
+                    .foregroundStyle(Color.movesGray500)
+                    .lineSpacing(3)
+            }
+
+            // Empty state
+            if move.photoFilename == nil && (move.completionNote ?? "").isEmpty {
+                Text("No memory yet.")
+                    .font(MOVESTypography.caption())
+                    .foregroundStyle(Color.movesGray300)
+            }
+
+            // Edit / Add button
+            let hasMemory = move.photoFilename != nil || !(move.completionNote ?? "").isEmpty
+            MOVESSecondaryButton(
+                title: hasMemory ? "Edit Memory" : "Add Memory",
+                icon: hasMemory ? "pencil" : "plus"
+            ) {
+                HapticManager.impact(.light)
+                onEditMemory?()
+            }
+            .padding(.top, MOVESSpacing.xs)
+        }
+    }
+
     // MARK: - Action Buttons
     // Confirmation states: Save → "Saved ✓", Complete → "Done ✓"
     private var actionButtons: some View {
         VStack(spacing: MOVESSpacing.sm) {
-            MOVESPrimaryButton(title: didComplete ? "Done" : "I Did This") {
+            MOVESPrimaryButton(title: didComplete ? "Done" : "Let's go") {
                 guard !didComplete else { return }
                 HapticManager.success()
                 withAnimation(MOVESAnimation.quick) {

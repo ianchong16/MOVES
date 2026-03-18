@@ -2,20 +2,28 @@ import Foundation
 import SwiftData
 import CoreLocation
 
-// MARK: - Move Generation Service
-// The pipeline orchestrator.
-// Stage 1:   Context assembly
-// Stage 2:   Candidate generation (Google Places → MapKit → LLM-only)
-// Stage 2.5: CandidateScorer — rank by composite score before LLM sees them
-// Stage 3:   LLM composition (scored candidates → curated move)
+// MARK: - Move Generation Service (Phase 9A — Pipeline Refactor)
+// The pipeline orchestrator — 7-stage flow:
+//
+// Stage 1:   Context assembly (ContextBuilder)
+// Stage 2:   MapKit expanded recall (primary source — always free, always available)
+// Stage 2.1: FeasibilityFilter — hard distance/budget/indoor-outdoor/time gates
+// Stage 2.5: CandidateScorer — initial 9-dimension scoring
+// Stage 2.6: GoogleEnrichmentService — enrich top 5 with ratings/price/hours, then re-score
+// Stage 2.7: DiversityReranker — MMR category-diverse top 8
+// Stage 3:   LLM composition (gpt-4o-mini narrates the chosen candidate)
 // Stage 4:   Move building
+//
+// MapKit-first: Google Places is enrichment-only (not discovery).
+// LLM-only discovery is emergency-only (no location OR zero candidates after all recall).
 // Candidate caching: remix reshuffles + re-scores cached candidates (no extra API calls).
 
 final class MoveGenerationService {
-    private let placesService  = PlaceCandidateService()
-    private let mapKitService  = MapKitSearchService()
-    private let llmService     = LLMService()
-    private let weatherService = WeatherService()
+    private let mapKitService      = MapKitSearchService()
+    private let enrichmentService  = GoogleEnrichmentService()
+    private let llmService         = LLMService()
+    private let weatherService     = WeatherService()
+    private let eventbriteService  = EventbriteService()
 
     // Candidate cache — remix reshuffles these instead of re-calling APIs
     private var cachedCandidates: [PlaceCandidate] = []
@@ -34,7 +42,22 @@ final class MoveGenerationService {
         locationName: String? = nil,
         recentMoveTitles: [String] = [],
         recentCategories: [String: Int] = [:],   // Phase 7: category affinity for novelty scoring
-        isRemix: Bool = false
+        recentVenueFingerprints: [String] = [],
+        recentGeneratedCategories: [String] = [],
+        currentVenueFingerprint: String? = nil,  // remix: exclude currently displayed venue
+        positiveCategoryAffinity: [String: Int] = [:],         // Fix 1: loved categories
+        negativeCategoryAffinity: [String: Int] = [:],         // Fix 1: rejected categories
+        positiveSubCategoryAffinity: [String: Int] = [:],      // P2: loved place types (google level)
+        negativeSubCategoryAffinity: [String: Int] = [:],      // P2: rejected place types (google level)
+        personalTimeHistogram: [String: Int] = [:],             // P2: personal time-of-day activity model
+        queryRotationIndex: Int = 0,                            // P2: cycles MapKit synonym sets
+        whenMode: String = "Right Now",                         // P3: planning ahead mode
+        feedbackPositiveTags: [String] = [],                    // Phase 4 Fix B: tags from loved moves
+        feedbackNegativeTags: [String] = [],                    // Phase 4 Fix B: tags from rejected moves
+        selectedMood: MoveMood? = nil,                          // Phase 5: user's mood selection
+        timeAvailable: TimeAvailable? = nil,                    // Phase 5: how much time user has
+        isRemix: Bool = false,
+        remixReason: RemixReason? = nil                         // Why user skipped previous move
     ) async -> Move? {
         print("[Pipeline] ═══════════════════════════════════")
         print("[Pipeline] Starting move generation \(isRemix ? "(REMIX)" : "")")
@@ -45,15 +68,25 @@ final class MoveGenerationService {
 
         // Check location is available
         guard location != nil else {
-            print("[Pipeline] ❌ No location available — trying LLM-only with nil location")
+            print("[Pipeline] ❌ No location available — emergency LLM-only")
             return await llmOnlyFallback(
                 profile: profile, socialMode: socialMode, indoorOutdoor: indoorOutdoor,
                 budgetFilter: budgetFilter, location: location, locationName: locationName,
-                recentMoveTitles: recentMoveTitles, recentCategories: recentCategories
+                recentMoveTitles: recentMoveTitles, recentCategories: recentCategories,
+                recentVenueFingerprints: recentVenueFingerprints,
+                recentGeneratedCategories: recentGeneratedCategories,
+                currentVenueFingerprint: currentVenueFingerprint,
+                positiveSubCategoryAffinity: positiveSubCategoryAffinity,
+                negativeSubCategoryAffinity: negativeSubCategoryAffinity,
+                whenMode: whenMode,
+                feedbackPositiveTags: feedbackPositiveTags,
+                feedbackNegativeTags: feedbackNegativeTags,
+                selectedMood: selectedMood,
+                timeAvailable: timeAvailable
             )
         }
 
-        // Stage 1: Build context
+        // ── Stage 1: Build context ──────────────────────────────────
         let context = ContextBuilder.build(
             profile: profile,
             socialMode: socialMode,
@@ -61,7 +94,21 @@ final class MoveGenerationService {
             budgetFilter: budgetFilter,
             location: location,
             recentMoveTitles: recentMoveTitles,
-            recentCategories: recentCategories
+            recentCategories: recentCategories,
+            recentVenueFingerprints: recentVenueFingerprints,
+            recentGeneratedCategories: recentGeneratedCategories,
+            currentVenueFingerprint: currentVenueFingerprint,
+            positiveCategoryAffinity:    positiveCategoryAffinity,
+            negativeCategoryAffinity:    negativeCategoryAffinity,
+            positiveSubCategoryAffinity: positiveSubCategoryAffinity,
+            negativeSubCategoryAffinity: negativeSubCategoryAffinity,
+            personalTimeHistogram:       personalTimeHistogram,
+            queryRotationIndex:          queryRotationIndex,
+            whenMode:                    whenMode,
+            feedbackPositiveTags:        feedbackPositiveTags,
+            feedbackNegativeTags:        feedbackNegativeTags,
+            selectedMood:                selectedMood,
+            timeAvailable:               timeAvailable
         )
 
         print("[Pipeline] Stage 1 ✅ Context built")
@@ -72,7 +119,7 @@ final class MoveGenerationService {
             print("[Pipeline]   Place types: \(p.selectedPlaceTypes)")
         }
 
-        // Stage 2: Get candidates (from cache if remix, otherwise fetch fresh)
+        // ── Stage 2: Get candidates (from cache if remix, otherwise fetch fresh) ──
         var candidates: [PlaceCandidate] = []
 
         if isRemix, !cachedCandidates.isEmpty, cacheIsValid() {
@@ -82,9 +129,9 @@ final class MoveGenerationService {
             candidates = await fetchFreshCandidates(context: context)
         }
 
-        // If still no candidates, use LLM-only discovery
+        // If still no candidates after MapKit + broad recall → emergency LLM-only
         if candidates.isEmpty {
-            print("[Pipeline] ⚡ No candidates from any source — trying LLM-only discovery")
+            print("[Pipeline] *** EMERGENCY *** No candidates from any source — LLM-only discovery")
             return await llmOnlyGeneration(
                 context: context, location: location, locationName: locationName
             )
@@ -95,37 +142,107 @@ final class MoveGenerationService {
         cachedContext    = context
         lastCacheTime    = Date()
 
-        // Stage 2.5: Score and rank candidates
+        // ── Stage 2.1: Feasibility filter — hard gates ──────────────
         let userLocation = location!   // safe — guarded above
-        let weather      = await weatherService.fetchCondition(at: userLocation)
-        var scored       = CandidateScorer.score(
-            candidates: candidates, context: context,
+        let feasible = FeasibilityFilter.apply(
+            candidates: candidates,
+            context: context,
+            userLocation: userLocation
+        )
+        print("[Pipeline] Stage 2.1 ✅ Feasibility filter: \(candidates.count) → \(feasible.count)")
+
+        // ── Stage 2.2: Hard venue exclusion — anti-repeat ────────────
+        let deduped = excludeRecentVenues(
+            candidates: feasible,
+            recentFingerprints: context.recentVenueFingerprints,
+            currentFingerprint: context.currentVenueFingerprint
+        )
+        print("[Pipeline] Stage 2.2 ✅ Venue exclusion: \(feasible.count) → \(deduped.count)")
+
+        // ── Stage 2.5: Score and rank candidates (initial scoring) ──
+        let weather = await weatherService.fetchCondition(at: userLocation)
+        let initialScored = CandidateScorer.score(
+            candidates: deduped, context: context,
             userLocation: userLocation, weather: weather
         )
+        print("[Pipeline] Stage 2.5 ✅ Initial scoring: \(initialScored.count) candidates scored")
 
-        // Remix: shuffle top-12 for variety while keeping quality
+        // ── Stage 2.6: Google enrichment (top 15) + re-score ─────────
+        let topForEnrichment = Array(initialScored.prefix(15))
+        let enrichedCandidates = await enrichmentService.enrich(
+            candidates: topForEnrichment.map { $0.candidate },
+            topN: 15
+        )
+        // Merge enriched candidates back into the full pool
+        let unenriched = initialScored.dropFirst(15).map { $0.candidate }
+        let fullPool = enrichedCandidates + unenriched
+
+        // Re-score the full pool with enriched data
+        let scored = CandidateScorer.score(
+            candidates: fullPool, context: context,
+            userLocation: userLocation, weather: weather
+        )
+        let enrichedCount = enrichedCandidates.filter { $0.dataSource == "google" }.count
+        print("[Pipeline] Stage 2.6 ✅ Google enrichment: \(enrichedCount)/\(topForEnrichment.count) matched, re-scored \(scored.count)")
+
+        // ── Stage 2.55: Remix reason adjustments (if applicable) ──────
+        let reasonAdjusted = applyRemixReasonAdjustments(
+            candidates: scored, reason: remixReason, userLocation: userLocation
+        )
+        if let reason = remixReason {
+            print("[Pipeline] Stage 2.55 ✅ Remix reason (\(reason.rawValue)) adjustments applied")
+        }
+
+        // ── Stage 2.65: Taste gate — taste-driven quality filter ──
+        let tasteFiltered = TasteGate.apply(scored: reasonAdjusted, context: context)
+        print("[Pipeline] Stage 2.65 ✅ Taste gate: \(reasonAdjusted.count) → \(tasteFiltered.count)")
+
+        // ── Stage 2.66: LLM-as-Judge — world-knowledge quality filter ──
+        let topForJudging = Array(tasteFiltered.prefix(8))
+        let judgments = await llmService.judgeCandidates(topForJudging, context: context)
+        let judged = applyJudgments(candidates: tasteFiltered, judgments: judgments)
+        print("[Pipeline] Stage 2.66 ✅ LLM Judge: \(tasteFiltered.count) → \(judged.count)")
+
+        // ── Stage 2.7: Diversity reranking (MMR) ────────────────────
+        // Early users (<15 completions) get λ=0.40 — diversity-heavy so they see a variety
+        // of categories and the system can learn taste before converging on a narrow profile.
+        // After 15 completions, revert to λ=0.70 (quality-dominant).
+        // Remix always uses λ=0.50 for maximum variety on skip.
+        let totalCompletions = context.recentCategories.values.reduce(0, +)
+        let lambda: Double
         if isRemix {
-            scored = Array(scored.prefix(12).shuffled().prefix(8))
+            lambda = 0.50  // remix: favor diversity over quality
+        } else if totalCompletions < 15 {
+            lambda = 0.40  // early user: maximize category spread for taste calibration
         } else {
-            scored = Array(scored.prefix(8))
+            lambda = 0.70  // experienced user: quality-dominant
+        }
+        let diverse = DiversityReranker.rerank(
+            scored: judged, lambda: lambda, topK: 8,
+            recentGeneratedCategories: context.recentGeneratedCategories
+        )
+        print("[Pipeline] Stage 2.7 ✅ MMR reranking (λ=\(lambda), completions=\(totalCompletions)): \(diverse.count) diverse candidates")
+        for (i, s) in diverse.prefix(5).enumerated() {
+            let cat = CandidateScorer.inferCategory(from: s.candidate.types.map { $0.lowercased() })
+            print("[Pipeline]   \(i + 1). \(s.candidate.name) — [\(s.score.label)★] \(s.score.distanceLabel) (\(cat))")
         }
 
-        print("[Pipeline] Stage 2.5 ✅ Scored → top \(scored.count) candidates")
-        for (i, s) in scored.prefix(3).enumerated() {
-            print("[Pipeline]   \(i + 1). \(s.candidate.name) — [\(s.score.label)★] \(s.score.distanceLabel)")
-        }
+        // ── Stage 2.8: Wildcard injection (~15% chance) ──────────────
+        let finalCandidates = injectWildcard(
+            topCandidates: diverse, fullPool: judged, context: context
+        )
 
-        // Stage 3: LLM composition
+        // ── Stage 3: LLM composition ────────────────────────────────
         do {
             let response = try await llmService.composeMove(
-                context: context, scoredCandidates: scored, locationName: locationName
+                context: context, scoredCandidates: finalCandidates, locationName: locationName
             )
             print("[Pipeline] Stage 3 ✅ LLM composed: \"\(response.title)\" at \(response.placeName)")
 
             // Stage 4: Build the Move
             let move = buildMove(
                 from: response,
-                candidates: scored.map { $0.candidate },
+                candidates: finalCandidates.map { $0.candidate },
                 location: location,
                 locationName: locationName
             )
@@ -134,114 +251,316 @@ final class MoveGenerationService {
             return move
 
         } catch {
-            print("[Pipeline] Stage 3 ❌ LLM error: \(error.localizedDescription)")
+            print("[Pipeline] Stage 3 ❌ LLM composition error: \(error.localizedDescription)")
+            // Fallback: build a basic move from the top candidate (no LLM-only discovery)
+            if let topCandidate = finalCandidates.first {
+                print("[Pipeline] Using fallback move from top candidate: \(topCandidate.candidate.name)")
+                let move = buildFallbackMove(
+                    from: topCandidate,
+                    location: location,
+                    locationName: locationName
+                )
+                print("[Pipeline] Stage 4 ✅ Fallback move built: \"\(move.title)\"")
+                print("[Pipeline] ═══════════════════════════════════")
+                return move
+            }
+            // Absolute last resort — should never reach here if we have candidates
+            print("[Pipeline] *** EMERGENCY *** LLM failed + no candidates — LLM-only discovery")
             return await llmOnlyGeneration(
                 context: context, location: location, locationName: locationName
             )
         }
     }
 
-    // MARK: - Fetch Fresh Candidates (Multi-Source)
-    // Priority: Google Places → MapKit → Empty (triggers LLM-only)
-    private func fetchFreshCandidates(context: MoveContext) async -> [PlaceCandidate] {
-        var candidates: [PlaceCandidate] = []
+    // MARK: - Apply LLM Judge Judgments
+    // Maps judgments by index, removes rejected candidates, adjusts scores.
+    // Graceful: if result is empty or judgments are empty, returns originals.
+    private func applyJudgments(
+        candidates: [ScoredCandidate],
+        judgments: [CandidateJudgment]
+    ) -> [ScoredCandidate] {
+        guard !judgments.isEmpty else { return candidates }
 
-        // Source 1: Google Places (if API key works)
-        do {
-            candidates = try await placesService.fetchCandidates(for: context)
-            if !candidates.isEmpty {
-                let safe = safetyFilter(candidates, context: context)
-                print("[Pipeline] Stage 2 ✅ Google Places: \(safe.count) candidates (after safety filter)")
-                for (i, c) in safe.prefix(3).enumerated() {
-                    print("[Pipeline]   \(i+1). \(c.name) — \(c.rating ?? 0)★")
+        let judgmentMap = Dictionary(uniqueKeysWithValues: judgments.map { ($0.index, $0) })
+
+        var result: [ScoredCandidate] = []
+        for (i, sc) in candidates.enumerated() {
+            if let judgment = judgmentMap[i] {
+                if !judgment.keep {
+                    print("[LLM Judge] ❌ Rejected: \(sc.candidate.name) — \(judgment.reason)")
+                    continue
                 }
-                return safe
+                // Apply score adjustment
+                var adjustedScore = sc.score
+                adjustedScore.composite = max(0.0, min(1.0, adjustedScore.composite + judgment.scoreAdjustment))
+                adjustedScore.label = String(format: "%.1f", adjustedScore.composite * 10.0)
+                result.append(ScoredCandidate(candidate: sc.candidate, score: adjustedScore))
+            } else {
+                // Not judged — pass through unchanged
+                result.append(sc)
             }
-        } catch {
-            print("[Pipeline] Stage 2 ⚠️ Google Places failed: \(error.localizedDescription)")
         }
 
-        // Source 2: Apple MapKit (free, always available)
-        print("[Pipeline] Trying MapKit search...")
-        candidates = await mapKitService.fetchCandidates(for: context)
-        if !candidates.isEmpty {
-            let safe = safetyFilter(candidates, context: context)
-            print("[Pipeline] Stage 2 ✅ MapKit: \(safe.count) candidates (after safety filter)")
-            for (i, c) in safe.prefix(3).enumerated() {
-                print("[Pipeline]   \(i+1). \(c.name) — \(c.address)")
-            }
-            return safe
+        // Graceful degradation
+        if result.isEmpty && !candidates.isEmpty {
+            print("[LLM Judge] ⚠️ All candidates rejected — returning originals")
+            return candidates
         }
 
-        // Source 3: Broader MapKit search (generic queries)
-        print("[Pipeline] Trying broader MapKit search...")
-        candidates = await broadMapKitSearch(context: context)
-        if !candidates.isEmpty {
-            let safe = safetyFilter(candidates, context: context)
-            print("[Pipeline] Stage 2 ✅ Broad MapKit: \(safe.count) candidates (after safety filter)")
-            return safe
-        }
-
-        print("[Pipeline] Stage 2 ❌ No candidates from any structured source")
-        return []
+        return result.sorted { $0.score.composite > $1.score.composite }
     }
 
-    // MARK: - Safety Filter
-    // Removes candidates whose type/category conflicts with time-of-day rules.
-    private func safetyFilter(_ candidates: [PlaceCandidate], context: MoveContext) -> [PlaceCandidate] {
-        let excluded = context.safetyExcludeCategories
-        guard !excluded.isEmpty else { return candidates }
+    // MARK: - Wildcard Injection (Stage 2.8)
+    // With ~15% probability, swap the lowest-scored candidate in the top 8 with a high-quality
+    // candidate from an unexplored category. Creates serendipity without sacrificing trust.
+    private func injectWildcard(
+        topCandidates: [ScoredCandidate],
+        fullPool: [ScoredCandidate],
+        context: MoveContext
+    ) -> [ScoredCandidate] {
+        // Only inject on ~15% of generations
+        guard Double.random(in: 0...1) < 0.15 else { return topCandidates }
+        guard topCandidates.count >= 4 else { return topCandidates }
 
-        let result = candidates.filter { candidate in
-            let typeStrings = candidate.types.map { $0.lowercased() }
-            return !excluded.contains { term in
-                typeStrings.contains { $0.contains(term.lowercased()) }
-            }
+        // Find categories already in the top candidates
+        let topCategories = Set(topCandidates.map {
+            CandidateScorer.inferCategory(from: $0.candidate.types.map { $0.lowercased() })
+        })
+
+        // Find a wildcard: high quality + story value but from an unexplored category
+        let wildcard = fullPool.first { sc in
+            let cat = CandidateScorer.inferCategory(from: sc.candidate.types.map { $0.lowercased() })
+            let isNewCategory = !topCategories.contains(cat)
+            let hasQuality = sc.score.qualitySignal > 0.5
+            let hasStory = sc.score.storyValue > 0.3
+            let notAlreadyInTop = !topCandidates.contains { $0.candidate.name == sc.candidate.name }
+            return isNewCategory && hasQuality && hasStory && notAlreadyInTop
         }
 
-        // If filtering removed everything, return original (better to show something)
-        return result.isEmpty ? candidates : result
+        guard let wildcard else { return topCandidates }
+
+        // Replace the lowest-scored candidate (last position)
+        var result = topCandidates
+        result[result.count - 1] = wildcard
+        let cat = CandidateScorer.inferCategory(from: wildcard.candidate.types.map { $0.lowercased() })
+        print("[Pipeline] Stage 2.8 ✅ Wildcard injected: \(wildcard.candidate.name) (\(cat)) — something different")
+
+        return result
     }
 
-    // MARK: - Broad MapKit Search (generic queries for thin areas)
-    private func broadMapKitSearch(context: MoveContext) async -> [PlaceCandidate] {
-        guard let lat = context.latitude, let lng = context.longitude else { return [] }
+    // MARK: - Remix Reason Score Adjustments
+    // When the user tells us *why* they skipped, we adjust scores for the next round.
+    // "Too far" → boost close candidates; "Wrong vibe" → boost taste-diverse candidates; etc.
+    private func applyRemixReasonAdjustments(
+        candidates: [ScoredCandidate],
+        reason: RemixReason?,
+        userLocation: CLLocation
+    ) -> [ScoredCandidate] {
+        guard let reason else { return candidates }
 
-        let broadContext = MoveContext(
-            boredomReason:      context.boredomReason,
-            coreDesire:         context.coreDesire,
-            vibes:              context.vibes,
-            placeTypes:         ["restaurant", "cafe", "park"],
-            energyLevel:        context.energyLevel,
-            maxDistance:        "I'll go anywhere",
-            budget:             context.budget,
-            socialPref:         context.socialPref,
-            transport:          context.transport,
-            personalRules:      context.personalRules,
-            filterSocialMode:   context.filterSocialMode,
-            filterIndoorOutdoor: context.filterIndoorOutdoor,
-            filterBudget:       context.filterBudget,
-            latitude:           lat,
-            longitude:          lng,
-            timeOfDay:          context.timeOfDay,
-            dayOfWeek:          context.dayOfWeek,
-            season:             context.season,
-            isWeekend:          context.isWeekend,
-            currentHour:        context.currentHour,
-            recentMoveTitles:   context.recentMoveTitles,
-            recentCategories:   context.recentCategories
+        return candidates.map { sc in
+            var adjustedScore = sc.score
+            let adjustment: Double
+
+            switch reason {
+            case .tooFar:
+                // Boost candidates that are very close (distance score > 0.7)
+                adjustment = sc.score.distance > 0.7 ? 0.08 : (sc.score.distance < 0.4 ? -0.10 : 0.0)
+            case .notInTheMood:
+                // Boost candidates from different categories — favor novelty
+                adjustment = sc.score.novelty > 0.6 ? 0.06 : 0.0
+            case .beenThere:
+                // No scoring change — this should be handled by venue exclusion
+                adjustment = 0.0
+            case .notInteresting:
+                // Boost candidates with high story value (editorial, hidden gems)
+                adjustment = sc.score.storyValue > 0.5 ? 0.08 : (sc.score.storyValue < 0.2 ? -0.06 : 0.0)
+            case .tooExpensive:
+                // Boost cheap candidates, penalize expensive ones
+                adjustment = sc.score.budgetFit > 0.8 ? 0.08 : (sc.score.budgetFit < 0.3 ? -0.10 : 0.0)
+            case .wrongVibe:
+                // Boost candidates with high taste match — user wants better fit
+                adjustment = sc.score.tasteMatch > 0.6 ? 0.08 : (sc.score.tasteMatch < 0.3 ? -0.08 : 0.0)
+            }
+
+            adjustedScore.composite = max(0.0, min(1.0, adjustedScore.composite + adjustment))
+            adjustedScore.label = String(format: "%.1f", adjustedScore.composite * 10.0)
+            return ScoredCandidate(candidate: sc.candidate, score: adjustedScore)
+        }.sorted { $0.score.composite > $1.score.composite }
+    }
+
+    // MARK: - Hard Venue Exclusion (Anti-Repeat)
+    // Removes candidates that match recently generated venues or the currently displayed venue (remix).
+    // Uses normalized "name|address" fingerprints for stable identity.
+    // Graceful: if exclusion would empty the pool, returns originals.
+    private func excludeRecentVenues(
+        candidates: [PlaceCandidate],
+        recentFingerprints: [String],
+        currentFingerprint: String?
+    ) -> [PlaceCandidate] {
+        guard !recentFingerprints.isEmpty || currentFingerprint != nil else { return candidates }
+
+        // Build set of fingerprints to exclude
+        // Last 5 venue fingerprints (hard exclusion window) + current venue on remix
+        let exclusionWindow = Array(recentFingerprints.suffix(5))
+        var excludeSet = Set(exclusionWindow)
+        if let current = currentFingerprint {
+            excludeSet.insert(current)
+        }
+
+        let filtered = candidates.filter { candidate in
+            let fp = AppState.venueFingerprint(placeName: candidate.name, placeAddress: candidate.address)
+            return !excludeSet.contains(fp)
+        }
+
+        // Graceful degradation: if everything excluded, return originals
+        if filtered.isEmpty && !candidates.isEmpty {
+            print("[Pipeline] ⚠️ All candidates excluded by venue history — returning originals (degraded)")
+            return candidates
+        }
+
+        let excluded = candidates.count - filtered.count
+        if excluded > 0 {
+            print("[Pipeline] 🔒 Excluded \(excluded) recently shown venue(s)")
+        }
+        return filtered
+    }
+
+    // MARK: - Fetch Fresh Candidates (MapKit-First — Phase 9A)
+    // Source 1: MapKit expanded recall (up to 6 queries, 25 candidates)
+    // Source 2: If <5 results, add MapKit broadRecall (merge + dedup)
+    // Returns candidates — empty triggers emergency LLM-only.
+    private func fetchFreshCandidates(context: MoveContext) async -> [PlaceCandidate] {
+        // Run MapKit + Eventbrite in parallel
+        print("[Pipeline] Stage 2: MapKit primary recall + Eventbrite...")
+
+        async let mapKitResult = mapKitService.fetchCandidates(for: context)
+        async let eventbriteResult = eventbriteService.fetchNearbyEvents(
+            latitude: context.latitude ?? 0,
+            longitude: context.longitude ?? 0,
+            radiusKm: context.searchRadius / 1000
         )
 
-        return await mapKitService.fetchCandidates(for: broadContext)
+        var candidates = await mapKitResult
+        let eventCandidates = await eventbriteResult
+
+        print("[Pipeline] Stage 2: MapKit returned \(candidates.count) raw candidates")
+        print("[Pipeline] Stage 2: Eventbrite returned \(eventCandidates.count) events")
+
+        for (i, c) in candidates.prefix(3).enumerated() {
+            print("[Pipeline]   \(i+1). \(c.name) — \(c.address)")
+        }
+
+        // Merge Eventbrite events into the pool (dedup by name)
+        var seen = Set(candidates.map { $0.name.lowercased() })
+        for event in eventCandidates {
+            let key = event.name.lowercased()
+            if !seen.contains(key) {
+                candidates.append(event)
+                seen.insert(key)
+            }
+        }
+
+        // Broad recall if thin results (<5)
+        if candidates.count < 5 {
+            print("[Pipeline] Stage 2: Thin results (\(candidates.count)) — running broad recall...")
+            let broadCandidates = await mapKitService.broadRecall(for: context)
+
+            for candidate in broadCandidates {
+                let key = candidate.name.lowercased()
+                if !seen.contains(key) {
+                    candidates.append(candidate)
+                    seen.insert(key)
+                }
+            }
+            print("[Pipeline] Stage 2: After broad recall merge: \(candidates.count) candidates")
+        }
+
+        if candidates.isEmpty {
+            print("[Pipeline] Stage 2 ❌ No candidates from any source")
+        } else {
+            print("[Pipeline] Stage 2 ✅ Total: \(candidates.count) candidates (MapKit + Eventbrite)")
+        }
+
+        return candidates
     }
 
-    // MARK: - LLM-Only Generation (Last Resort Before nil)
+    // MARK: - Fallback Move Builder (Phase 9A)
+    // When LLM composition fails but we have scored candidates,
+    // build a basic Move from the top candidate directly.
+    // Generic title/setup/action — functional but not poetic.
+    // Prevents falling back to expensive LLM-only discovery.
+    private func buildFallbackMove(
+        from scored: ScoredCandidate,
+        location: CLLocation?,
+        locationName: String?
+    ) -> Move {
+        let c = scored.candidate
+        let category = inferMoveCategory(from: c.types)
+        let cost = inferCostRange(from: c.priceLevel)
+
+        let move = Move(
+            title:             "Check Out \(c.name)",
+            setupLine:         "A spot worth visiting nearby.",
+            placeName:         c.name,
+            placeAddress:      c.address,
+            placeLatitude:     c.latitude,
+            placeLongitude:    c.longitude,
+            actionDescription: "Head to \(c.name) and see what catches your eye.",
+            challenge:         nil,
+            mood:              .spontaneous,
+            reasonItFits:      "Highly scored based on your preferences and location.",
+            costEstimate:      cost,
+            timeEstimate:      30,
+            distanceDescription: scored.score.distanceLabel,
+            category:          category,
+            hoursVerified:     c.dataSource == "google"
+        )
+
+        move.generatedForLocation = locationName
+        calculateDistance(for: move, from: location,
+                          placeLatitude: c.latitude, placeLongitude: c.longitude,
+                          baseTime: 30)
+        return move
+    }
+
+    // MARK: - Infer MoveCategory from types
+    private func inferMoveCategory(from types: [String]) -> MoveCategory {
+        let lower = types.map { $0.lowercased() }
+        if lower.contains(where: { $0.contains("cafe") || $0.contains("coffee") }) { return .coffee }
+        if lower.contains(where: { $0.contains("restaurant") || $0.contains("food") }) { return .food }
+        if lower.contains(where: { $0.contains("park") })     { return .park }
+        if lower.contains(where: { $0.contains("nature") })   { return .nature }
+        if lower.contains(where: { $0.contains("bar") || $0.contains("night_club") }) { return .nightlife }
+        if lower.contains(where: { $0.contains("book") })     { return .bookstore }
+        if lower.contains(where: { $0.contains("gallery") || $0.contains("museum") }) { return .culture }
+        if lower.contains(where: { $0.contains("music") || $0.contains("record") }) { return .music }
+        if lower.contains(where: { $0.contains("clothing") || $0.contains("shop") }) { return .shopping }
+        return .coffee
+    }
+
+    // MARK: - Infer CostRange from priceLevel
+    private func inferCostRange(from priceLevel: Int?) -> CostRange {
+        switch priceLevel {
+        case 0:      return .free
+        case 1:      return .under5
+        case 2:      return .under12
+        case 3:      return .under25
+        case 4:      return .under50
+        default:     return .under12
+        }
+    }
+
+    // MARK: - LLM-Only Generation (*** EMERGENCY ONLY ***)
+    // Only reachable when: (a) no location, or (b) zero candidates after MapKit + broad recall.
+    // Uses gpt-4o (expensive) — should be rare in normal operation.
     private func llmOnlyGeneration(
         context: MoveContext,
         location: CLLocation?,
         locationName: String?
     ) async -> Move? {
-        print("[Pipeline] ⚡ LLM-only discovery mode")
+        print("[Pipeline] *** EMERGENCY *** LLM-only discovery mode")
+        print("[Pipeline] *** This should be rare — MapKit usually provides candidates ***")
         print("[Pipeline]   Location name: \(locationName ?? "unknown")")
 
         do {
@@ -269,7 +588,21 @@ final class MoveGenerationService {
         location: CLLocation?,
         locationName: String?,
         recentMoveTitles: [String],
-        recentCategories: [String: Int]
+        recentCategories: [String: Int],
+        recentVenueFingerprints: [String] = [],
+        recentGeneratedCategories: [String] = [],
+        currentVenueFingerprint: String? = nil,
+        positiveCategoryAffinity: [String: Int] = [:],
+        negativeCategoryAffinity: [String: Int] = [:],
+        positiveSubCategoryAffinity: [String: Int] = [:],
+        negativeSubCategoryAffinity: [String: Int] = [:],
+        personalTimeHistogram: [String: Int] = [:],
+        queryRotationIndex: Int = 0,
+        whenMode: String = "Right Now",
+        feedbackPositiveTags: [String] = [],
+        feedbackNegativeTags: [String] = [],
+        selectedMood: MoveMood? = nil,
+        timeAvailable: TimeAvailable? = nil
     ) async -> Move? {
         let context = ContextBuilder.build(
             profile: profile,
@@ -278,7 +611,21 @@ final class MoveGenerationService {
             budgetFilter: budgetFilter,
             location: location,
             recentMoveTitles: recentMoveTitles,
-            recentCategories: recentCategories
+            recentCategories: recentCategories,
+            recentVenueFingerprints: recentVenueFingerprints,
+            recentGeneratedCategories: recentGeneratedCategories,
+            currentVenueFingerprint: currentVenueFingerprint,
+            positiveCategoryAffinity:    positiveCategoryAffinity,
+            negativeCategoryAffinity:    negativeCategoryAffinity,
+            positiveSubCategoryAffinity: positiveSubCategoryAffinity,
+            negativeSubCategoryAffinity: negativeSubCategoryAffinity,
+            personalTimeHistogram:       personalTimeHistogram,
+            queryRotationIndex:          queryRotationIndex,
+            whenMode:                    whenMode,
+            feedbackPositiveTags:        feedbackPositiveTags,
+            feedbackNegativeTags:        feedbackNegativeTags,
+            selectedMood:                selectedMood,
+            timeAvailable:               timeAvailable
         )
         return await llmOnlyGeneration(context: context, location: location, locationName: locationName)
     }
@@ -341,6 +688,7 @@ final class MoveGenerationService {
         )
 
         move.generatedForLocation = locationName
+        move.placeTypes = matchedCandidate?.types ?? []
         calculateDistance(for: move, from: location, placeLatitude: lat, placeLongitude: lng, baseTime: response.timeEstimate)
         return move
     }

@@ -33,12 +33,16 @@ struct OnboardingContainerView: View {
                     .tag(1)
                 OnboardingTasteView(viewModel: viewModel)
                     .tag(2)
-                OnboardingFrictionView(viewModel: viewModel)
+                OnboardingTasteAnchorsView(viewModel: viewModel)
                     .tag(3)
-                OnboardingLocationView(locationService: locationService)
+                OnboardingDealbreakersView(viewModel: viewModel)
                     .tag(4)
-                OnboardingCompleteView()
+                OnboardingFrictionView(viewModel: viewModel)
                     .tag(5)
+                OnboardingLocationView(locationService: locationService)
+                    .tag(6)
+                OnboardingCompleteView()
+                    .tag(7)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .animation(MOVESAnimation.standard, value: viewModel.currentStep)
@@ -51,7 +55,7 @@ struct OnboardingContainerView: View {
     private var bottomBar: some View {
         VStack(spacing: MOVESSpacing.sm) {
             if viewModel.currentStep < viewModel.totalSteps - 1 {
-                if viewModel.currentStep == 4 {
+                if viewModel.currentStep == 6 {
                     MOVESPrimaryButton(title: "Continue") {
                         HapticManager.impact()
                         viewModel.advance()
@@ -72,7 +76,7 @@ struct OnboardingContainerView: View {
                     .disabled(!viewModel.canAdvance)
                 }
 
-                if viewModel.currentStep > 0 && viewModel.currentStep != 4 {
+                if viewModel.currentStep > 0 && viewModel.currentStep != 6 {
                     MOVESTextButton(title: "Back") {
                         HapticManager.impact(.light)
                         viewModel.goBack()

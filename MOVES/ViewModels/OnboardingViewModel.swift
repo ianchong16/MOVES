@@ -9,7 +9,7 @@ import Observation
 final class OnboardingViewModel {
     // Current step
     var currentStep: Int = 0
-    let totalSteps: Int = 6  // Welcome, Identity, Taste, Friction, Location, Complete
+    let totalSteps: Int = 8  // Welcome, Identity, Taste, TasteAnchors, Dealbreakers, Friction, Location, Complete
 
     // Section 1: Identity
     var selectedBoredomReason: BoredomReason?
@@ -28,6 +28,17 @@ final class OnboardingViewModel {
     var selectedIndoorOutdoor: IndoorOutdoor?
     var selectedTransport: TransportMode?
 
+    // Section 3b: Taste Anchors (places user already loves)
+    var tasteAnchors: [String] = []
+
+    // Section 4: Dealbreakers + Always Yes
+    var selectedDealbreakers: Set<String> = []
+    var selectedAlwaysYes: Set<String> = []
+
+    // Section 4b: Food Preferences
+    var selectedCuisines: Set<String> = []
+    var selectedDietary: Set<String> = []
+
     // Section 5: Personal Rules (included in MVP, lightweight)
     var selectedRules: Set<String> = []
 
@@ -38,12 +49,14 @@ final class OnboardingViewModel {
 
     var canAdvance: Bool {
         switch currentStep {
-        case 0: return true  // Welcome — always can advance
+        case 0: return true  // Welcome
         case 1: return selectedBoredomReason != nil && selectedCoreDesire != nil
         case 2: return !selectedVibes.isEmpty && !selectedPlaceTypes.isEmpty
-        case 3: return selectedEnergyLevel != nil
-        case 4: return true  // Location — always can advance (skip allowed)
-        case 5: return true  // Complete — always can finish
+        case 3: return true  // Taste Anchors — skippable
+        case 4: return true  // Dealbreakers — skippable
+        case 5: return selectedEnergyLevel != nil
+        case 6: return true  // Location — skip allowed
+        case 7: return true  // Complete
         default: return true
         }
     }
@@ -87,6 +100,48 @@ final class OnboardingViewModel {
         }
     }
 
+    func addTasteAnchor(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !tasteAnchors.contains(trimmed) else { return }
+        tasteAnchors.append(trimmed)
+    }
+
+    func removeTasteAnchor(_ name: String) {
+        tasteAnchors.removeAll { $0 == name }
+    }
+
+    func toggleDealbreaker(_ value: String) {
+        if selectedDealbreakers.contains(value) {
+            selectedDealbreakers.remove(value)
+        } else {
+            selectedDealbreakers.insert(value)
+        }
+    }
+
+    func toggleAlwaysYes(_ value: String) {
+        if selectedAlwaysYes.contains(value) {
+            selectedAlwaysYes.remove(value)
+        } else {
+            selectedAlwaysYes.insert(value)
+        }
+    }
+
+    func toggleCuisine(_ value: String) {
+        if selectedCuisines.contains(value) {
+            selectedCuisines.remove(value)
+        } else {
+            selectedCuisines.insert(value)
+        }
+    }
+
+    func toggleDietary(_ value: String) {
+        if selectedDietary.contains(value) {
+            selectedDietary.remove(value)
+        } else {
+            selectedDietary.insert(value)
+        }
+    }
+
     // Save to UserProfile
     func buildProfile() -> UserProfile {
         let profile = UserProfile()
@@ -101,7 +156,12 @@ final class OnboardingViewModel {
         profile.timePreference = selectedDayNight
         profile.indoorOutdoor = selectedIndoorOutdoor
         profile.transportMode = selectedTransport
+        profile.tasteAnchors = tasteAnchors
+        profile.dealbreakers = Array(selectedDealbreakers)
+        profile.alwaysYes = Array(selectedAlwaysYes)
         profile.personalRules = Array(selectedRules)
+        profile.cuisinePreferences = Array(selectedCuisines)
+        profile.dietaryRestrictions = Array(selectedDietary)
         profile.onboardingCompleted = true
         return profile
     }

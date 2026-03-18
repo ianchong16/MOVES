@@ -40,6 +40,10 @@ struct PlaceCandidate: Sendable {
 }
 
 // MARK: - Place Candidate Service
+// ⚠️ DEPRECATED (Phase 9A): No longer called from the active pipeline.
+// Google Places discovery is replaced by GoogleEnrichmentService (enrichment-only).
+// MapKit is now the primary candidate source.
+// Kept for reference and potential future use.
 // Queries Google Places Text Search API (legacy) for real nearby places.
 // Runs 2-3 queries in parallel, merges, deduplicates, filters.
 

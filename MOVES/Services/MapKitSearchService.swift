@@ -4,13 +4,14 @@ import MapKit
 // MARK: - MapKit Search Service
 // Apple's MKLocalSearch — free, no API key, always available.
 // Returns real POIs with names, addresses, and coordinates.
-// Used as the primary fallback when Google Places fails.
+// Phase 9A: MapKit is now the PRIMARY candidate source (not fallback).
 // Aligned with MOVES doc: "MapKit as always-works baseline."
 
 struct MapKitSearchService {
 
-    // MARK: - Fetch Candidates via MapKit
-    // Runs search queries against Apple's MapKit database.
+    // MARK: - Fetch Candidates via MapKit (Primary Source — Phase 9A)
+    // Runs expanded search queries against Apple's MapKit database.
+    // Returns up to 25 deduplicated candidates for a broader pool.
     func fetchCandidates(for context: MoveContext) async -> [PlaceCandidate] {
         guard let lat = context.latitude, let lng = context.longitude else {
             print("[MapKit] No location available — returning empty")
@@ -41,9 +42,40 @@ struct MapKitSearchService {
             return true
         }
 
-        // Cap at 10 candidates
-        let final = Array(deduped.prefix(10))
+        // Phase 9A: cap at 25 candidates for broader pool (was 10)
+        let final = Array(deduped.prefix(25))
         print("[MapKit] ✅ \(final.count) unique candidates after dedup")
+        return final
+    }
+
+    // MARK: - Broad Recall (Phase 9A — Neighborhood Deck Fallback)
+    // Runs generic category searches for when specific queries produce thin results (<5).
+    // Uses context.broadRecallQueries: restaurant, cafe, coffee shop, park, bar, bakery, etc.
+    func broadRecall(for context: MoveContext) async -> [PlaceCandidate] {
+        guard let lat = context.latitude, let lng = context.longitude else { return [] }
+
+        let queries = context.broadRecallQueries
+        print("[MapKit] Broad recall: running \(queries.count) generic searches")
+
+        let center = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        let radiusMeters = context.searchRadius
+
+        var allResults: [PlaceCandidate] = []
+        for query in queries {
+            let candidates = await search(query: query, center: center, radius: radiusMeters)
+            allResults.append(contentsOf: candidates)
+        }
+
+        var seen = Set<String>()
+        let deduped = allResults.filter { candidate in
+            let key = candidate.name.lowercased()
+            guard !seen.contains(key) else { return false }
+            seen.insert(key)
+            return true
+        }
+
+        let final = Array(deduped.prefix(25))
+        print("[MapKit] Broad recall: \(final.count) unique candidates")
         return final
     }
 

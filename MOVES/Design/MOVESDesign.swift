@@ -7,10 +7,12 @@ import SwiftUI
 // The restraint IS the brand.
 
 extension Color {
-    // Foundation — true black, true white
+    // Foundation — true black, true white, brand beige
     static let movesBlack = Color(hex: "191919")
     static let movesWhite = Color(hex: "FFFFFF")
     static let movesOffWhite = Color(hex: "F5F5F5")
+    static let movesBeige = Color(hex: "DAC8B4")       // Brand background — MOVES signature warm
+    static let movesBeigeDeep = Color(hex: "C9B8A6")   // Secondary surface on beige
 
     // Grays — cold, not warm. Fashion-forward.
     static let movesGray100 = Color(hex: "EBEBEB")
@@ -27,12 +29,12 @@ extension Color {
     static let movesSuccess = Color(hex: "191919")
     static let movesError = Color(hex: "D42020")
 
-    // Adaptive
-    static let movesPrimaryBg = Color.movesWhite
-    static let movesSecondaryBg = Color.movesOffWhite
+    // Adaptive — warm brand palette
+    static let movesPrimaryBg = Color.movesBeige        // Warm brand beige (#DAC8B4) — the MOVES canvas
+    static let movesSecondaryBg = Color.movesWhite      // White cards/sheets stand out against beige
     static let movesPrimaryText = Color.movesBlack
-    static let movesSecondaryText = Color.movesGray400
-    static let movesTertiaryText = Color.movesGray300
+    static let movesSecondaryText = Color.movesGray500
+    static let movesTertiaryText = Color.movesGray400
 }
 
 extension Color {
@@ -113,6 +115,11 @@ struct MOVESTypography {
 
     static func serifLarge() -> Font {
         .system(size: 19, weight: .regular, design: .serif)
+    }
+
+    // Place name — bold enough to anchor the eye, content not chrome
+    static func placeName() -> Font {
+        .system(size: 16, weight: .semibold, design: .default)
     }
 }
 
