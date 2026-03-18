@@ -14,7 +14,7 @@ struct VideoCaptureView: UIViewControllerRepresentable {
         picker.sourceType = .camera
         picker.mediaTypes = [UTType.movie.identifier]
         picker.videoMaximumDuration = 15
-        picker.videoQuality = .typeMedium
+        picker.videoQuality = .typeHigh
         picker.delegate = context.coordinator
         return picker
     }

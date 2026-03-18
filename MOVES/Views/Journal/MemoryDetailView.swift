@@ -174,7 +174,10 @@ struct MemoryDetailView: View {
                 .clipped()
         } else if let thumbnail = videoThumbnail {
             Button {
-                showingVideoPlayer = true
+                // Only open player when the video file is confirmed to exist
+                if videoURL != nil {
+                    showingVideoPlayer = true
+                }
             } label: {
                 ZStack {
                     Image(uiImage: thumbnail)
@@ -194,6 +197,10 @@ struct MemoryDetailView: View {
                 }
             }
             .buttonStyle(.plain)
+            // Explicit frame on the button itself bounds hit-testing to exactly 280px
+            .frame(maxWidth: .infinity)
+            .frame(height: 280)
+            .clipped()
         }
     }
 
@@ -345,10 +352,17 @@ struct VideoPlayerFullScreen: View {
     let url: URL
     let onDismiss: () -> Void
 
+    // Store player as @State so SwiftUI re-renders don't create a fresh instance
+    @State private var player: AVPlayer?
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            VideoPlayer(player: AVPlayer(url: url))
-                .ignoresSafeArea()
+            if let player {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
 
             Button(action: onDismiss) {
                 Text("CLOSE")
@@ -361,5 +375,16 @@ struct VideoPlayerFullScreen: View {
             .padding(MOVESSpacing.lg)
         }
         .background(Color.black)
+        .onAppear {
+            let p = AVPlayer(url: url)
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            player = p
+            p.play()
+        }
+        .onDisappear {
+            player?.pause()
+            player = nil
+        }
     }
 }

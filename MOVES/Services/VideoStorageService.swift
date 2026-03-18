@@ -16,16 +16,16 @@ struct VideoStorageService {
 
     // MARK: - Save
     // Copies video from temp URL to Documents/{moveID}.mov.
-    // Compresses to medium quality (720p) to keep file sizes reasonable (~5-10 MB for 15s).
+    // Compresses to 720p (AVAssetExportPreset1280x720) — sharp quality, ~5-8 MB for 15s.
     // Returns filename on success, nil on failure.
     @discardableResult
     static func save(videoURL: URL, for moveID: UUID) async -> String? {
         let filename = "\(moveID.uuidString).mov"
         let destinationURL = documentsURL.appendingPathComponent(filename)
 
-        // Compress to medium quality
+        // Compress to 720p (visually sharp for 15-second clips, ~5-8 MB)
         let asset = AVURLAsset(url: videoURL)
-        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetMediumQuality) else {
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {
             // Fallback: direct copy without compression
             return copyFile(from: videoURL, to: destinationURL, filename: filename)
         }
