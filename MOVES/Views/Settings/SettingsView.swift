@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 // MARK: - Settings View
 // Not a junk drawer. Clean rows, hairline dividers, monospaced labels.
@@ -7,6 +8,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var appState: AppState
+    @Environment(\.modelContext) private var modelContext
+
+    @State private var showingProfileEdit = false
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -26,7 +30,26 @@ struct SettingsView: View {
                 // Profile section
                 sectionHeader("PROFILE")
 
-                settingsRow(title: "Edit Taste Profile")
+                Button {
+                    if appState.userProfile != nil {
+                        showingProfileEdit = true
+                    }
+                } label: {
+                    settingsRow(
+                        title: "Edit Taste Profile",
+                        detail: appState.userProfile == nil ? "Not set up" : nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $showingProfileEdit) {
+                    if let profile = appState.userProfile {
+                        ProfileEditView(profile: profile) {
+                            showingProfileEdit = false
+                        }
+                        .presentationDragIndicator(.visible)
+                    }
+                }
+
                 settingsRow(title: "Location Settings")
 
                 // Subscription section
