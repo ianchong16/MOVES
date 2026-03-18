@@ -15,6 +15,10 @@ struct MoveDetailView: View {
     /// When non-nil, shows memory section for completed moves and hides action buttons.
     /// The callback dismisses the detail and opens the memory editor.
     var onEditMemory: (() -> Void)? = nil
+    /// Active session filters at the time this move was generated.
+    /// Shown as pills below "WHY THIS MOVE" so the user can see their filters working.
+    /// Empty = no active filters = pills row hidden.
+    var activeFilterLabels: [String] = []
 
     @State private var showContent = false
     @State private var didSave = false
@@ -107,6 +111,13 @@ struct MoveDetailView: View {
                     reasonBlock
                         .padding(.top, MOVESSpacing.xl)
 
+                    // Active filter pills — shows user which session filters shaped this result.
+                    // Hidden when no filters were active at generation time.
+                    if !activeFilterLabels.isEmpty {
+                        filterPillsRow
+                            .padding(.top, MOVESSpacing.sm)
+                    }
+
                     // Memory section — shown for completed moves opened from journal
                     if move.isCompleted, onEditMemory != nil {
                         // Hairline
@@ -189,6 +200,28 @@ struct MoveDetailView: View {
                 .font(MOVESTypography.serif())
                 .foregroundStyle(Color.movesGray500)
                 .lineSpacing(4)
+        }
+    }
+
+    // MARK: - Filter Pills Row
+    // Small horizontal scroll of active session filter labels.
+    // Lets the user see their filters at work without any explanation needed.
+    private var filterPillsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: MOVESSpacing.xs) {
+                ForEach(activeFilterLabels, id: \.self) { label in
+                    Text(label.uppercased())
+                        .font(MOVESTypography.caption())
+                        .kerning(0.5)
+                        .foregroundStyle(Color.movesGray300)
+                        .padding(.horizontal, MOVESSpacing.sm)
+                        .padding(.vertical, 4)
+                        .overlay(
+                            Rectangle()
+                                .stroke(Color.movesGray100, lineWidth: 0.5)
+                        )
+                }
+            }
         }
     }
 

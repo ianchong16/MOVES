@@ -225,6 +225,30 @@ struct HomeView: View {
                                 }
                             }
                         }
+
+                        // Reset — appears only when at least one filter is active.
+                        // Tap clears all filters in one gesture.
+                        if appState.hasActiveFilters {
+                            Rectangle()
+                                .fill(Color.movesGray200)
+                                .frame(width: 0.5, height: 16)
+                                .padding(.horizontal, 6)
+
+                            Button {
+                                withAnimation(MOVESAnimation.quick) {
+                                    appState.resetFilters()
+                                }
+                                HapticManager.selection()
+                            } label: {
+                                Text("Reset")
+                                    .font(MOVESTypography.caption())
+                                    .kerning(0.5)
+                                    .foregroundStyle(Color.movesGray400)
+                                    .padding(.horizontal, MOVESSpacing.sm)
+                                    .padding(.vertical, MOVESSpacing.xs)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
             }

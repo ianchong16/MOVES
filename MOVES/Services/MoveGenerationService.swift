@@ -87,11 +87,19 @@ final class MoveGenerationService {
         }
 
         // ── Stage 1: Build context ──────────────────────────────────
+        // L5 Fix: "Too expensive" remix must fetch fresh candidates with a hard price ceiling.
+        // Reshuffling the cached pool won't help if all cached candidates were pricey.
+        // Force a fresh run and tighten the budget to Under $12 (unless user set something tighter).
+        let forceFreshForBudget = isRemix && remixReason == .tooExpensive
+        let effectiveBudget: CostRange? = forceFreshForBudget
+            ? (budgetFilter ?? .under12)   // inject floor; respect a tighter existing filter
+            : budgetFilter
+
         let context = ContextBuilder.build(
             profile: profile,
             socialMode: socialMode,
             indoorOutdoor: indoorOutdoor,
-            budgetFilter: budgetFilter,
+            budgetFilter: effectiveBudget,
             location: location,
             recentMoveTitles: recentMoveTitles,
             recentCategories: recentCategories,
@@ -122,10 +130,13 @@ final class MoveGenerationService {
         // ── Stage 2: Get candidates (from cache if remix, otherwise fetch fresh) ──
         var candidates: [PlaceCandidate] = []
 
-        if isRemix, !cachedCandidates.isEmpty, cacheIsValid() {
+        if isRemix, !forceFreshForBudget, !cachedCandidates.isEmpty, cacheIsValid() {
             candidates = cachedCandidates
             print("[Pipeline] Stage 2 ✅ Using \(candidates.count) cached candidates (remix)")
         } else {
+            if forceFreshForBudget {
+                print("[Pipeline] Stage 2 ⚡ Bypassing cache — 'too expensive' remix requires fresh cheap candidates (budget floor: \(effectiveBudget?.displayText ?? "none"))")
+            }
             candidates = await fetchFreshCandidates(context: context)
         }
 

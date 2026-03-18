@@ -73,7 +73,8 @@ struct RootView: View {
                     },
                     onDismiss: {
                         appState.showingMoveDetail = false
-                    }
+                    },
+                    activeFilterLabels: activeFilterLabels
                 )
                 .presentationDragIndicator(.visible)
             }
@@ -162,6 +163,19 @@ struct RootView: View {
                 appState.showingPaywall = false
             }
         }
+    }
+
+    // MARK: - Active Filter Labels (P1 — Filter Transparency)
+    // Snapshot of session filters active when the move detail sheet opens.
+    // Passed to MoveDetailView so the user sees which filters shaped the result.
+    private var activeFilterLabels: [String] {
+        var labels: [String] = []
+        if let mood   = appState.selectedMood          { labels.append(mood.rawValue) }
+        if let social = appState.selectedSocialMode    { labels.append(social.rawValue) }
+        if let budget = appState.selectedBudget        { labels.append(budget.displayText) }
+        if let time   = appState.selectedTime          { labels.append(time.rawValue) }
+        if appState.selectedIndoorOutdoor != .either   { labels.append(appState.selectedIndoorOutdoor.rawValue) }
+        return labels
     }
 
     // Direct fetch from SwiftData — more reliable than @Query in callbacks

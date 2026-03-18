@@ -629,11 +629,28 @@ struct LLMService {
         if isNewUser {
             parts.append("")
             parts.append("## First Impression Mode (no history yet)")
-            parts.append("This user is brand new. This is their first or one of their earliest generated moves.")
-            parts.append("No taste history is available — lean heavily on their onboarding preferences (vibes, place types, energy level).")
+            parts.append("This user is brand new — no completion history exists.")
             parts.append("Pick the candidate with the strongest combination of quality, story, and character.")
-            parts.append("Aim for a move that feels: specific (not generic), discoverable (not a household name), and immediately compelling.")
-            parts.append("reasonItFits should reference something from their stated vibes or place preferences — make it feel personal even without history.")
+            parts.append("Aim for something specific, discoverable, and not a household name.")
+
+            // Give the LLM direct raw material for reasonItFits — don't make it infer from the buried profile section
+            if !context.vibes.isEmpty {
+                parts.append("")
+                parts.append("Their stated vibes: \(context.vibes.joined(separator: ", "))")
+            }
+            if !context.placeTypes.isEmpty {
+                parts.append("Their stated place types: \(context.placeTypes.joined(separator: ", "))")
+            }
+            if let energy = context.energyLevel {
+                parts.append("Energy level: \(energy)")
+            }
+
+            // Explicit instruction: wire a specific quality of THIS place to one of the above preferences
+            parts.append("")
+            parts.append("For reasonItFits: connect a SPECIFIC quality of the chosen place to one of their stated vibes or place types above.")
+            parts.append("Be concrete — name the quality, not the category.")
+            parts.append("Good: 'A proper crate-digging afternoon in a space that smells like old vinyl.' (for a record store + Analog vibe)")
+            parts.append("Bad: 'Matches your Analog vibe.' — too generic, says nothing about the actual place.")
         }
 
         if !context.recentMoveTitles.isEmpty {

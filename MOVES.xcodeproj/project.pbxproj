@@ -254,7 +254,8 @@
 				DEVELOPMENT_TEAM = 4SB9AQM75L;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "MOVES uses your camera to capture photos for your move journal.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "MOVES uses your camera to capture photos and videos for your move journal.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "MOVES uses your microphone to record audio when capturing video memories for your journal.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "MOVES uses your location to find great things to do nearby. We only check when you ask for a move.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MOVES adds photos to your journal of completed moves.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MOVES saves photos to your journal of completed moves.";
@@ -290,7 +291,8 @@
 				DEVELOPMENT_TEAM = 4SB9AQM75L;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "MOVES uses your camera to capture photos for your move journal.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "MOVES uses your camera to capture photos and videos for your move journal.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "MOVES uses your microphone to record audio when capturing video memories for your journal.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "MOVES uses your location to find great things to do nearby. We only check when you ask for a move.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "MOVES adds photos to your journal of completed moves.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "MOVES saves photos to your journal of completed moves.";
